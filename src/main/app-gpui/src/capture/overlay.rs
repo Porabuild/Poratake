@@ -1098,7 +1098,7 @@ fn cloak_for_park(window: &Window) -> bool {
         if !tiny.is_invalid() && SetWindowRgn(hwnd, Some(tiny), false) == 0 {
             let _ = DeleteObject(tiny.into());
         }
-        if !can_show_before_freeze(windows_build(), true) {
+        if windows_build() < 19041 {
             let _ = DwmFlush();
         }
     }
@@ -1191,48 +1191,6 @@ pub(crate) fn windows_build() -> u32 {
     })
 }
 
-fn show_overlay_before_freeze(window: &Window) -> bool {
-    #[cfg(windows)]
-    {
-        #[cfg(test)]
-        {
-            let _ = window;
-            true
-        }
-        #[cfg(not(test))]
-        {
-            use windows::Win32::UI::WindowsAndMessaging::{
-                SetWindowDisplayAffinity, WDA_EXCLUDEFROMCAPTURE,
-            };
-
-            let build = windows_build();
-            if !can_show_before_freeze(build, true) {
-                return false;
-            }
-            let Some(hwnd) = crate::windows::window_hwnd(window) else {
-                return false;
-            };
-            let excluded =
-                unsafe { SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE) }.is_ok();
-            if !can_show_before_freeze(build, excluded) {
-                return false;
-            }
-            show_noactivate_topmost(hwnd);
-            true
-        }
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = window;
-        true
-    }
-}
-
-#[cfg(any(windows, test))]
-fn can_show_before_freeze(windows_build: u32, capture_excluded: bool) -> bool {
-    windows_build >= 19041 && capture_excluded
-}
-
 fn track_overlay(
     handle: AnyWindowHandle,
     display_id: DisplayId,
@@ -1299,11 +1257,8 @@ fn align_fallback_overlay_with_work_area(
 }
 
 fn reveal_overlay_window(window: &Window, launch: OverlayLaunch, active: bool) -> bool {
-    if !active {
+    if !active || launch.deferred_show {
         return false;
-    }
-    if launch.deferred_show {
-        return show_overlay_before_freeze(window);
     }
     set_overlay_topmost(window);
     true
@@ -1323,8 +1278,13 @@ fn open_overlay_window(
     if active {
         if let Some(handle) = take_pooled_overlay(display_id, cx) {
             let updated = handle.update(cx, |overlay, window, cx| {
+                if launch.deferred_show {
+                    park_overlay(window);
+                }
                 prepare_overlay_window(window, display_bounds);
-                set_overlay_hole(window, None);
+                if !launch.deferred_show {
+                    set_overlay_hole(window, None);
+                }
                 let scale = window.scale_factor();
                 let focus_handle = overlay.focus_handle.clone();
                 let window_list_generation = overlay.window_list_generation.wrapping_add(1);
@@ -1781,6 +1741,9 @@ impl AreaOverlay {
         launch: OverlayLaunch,
         cx: &mut Context<Self>,
     ) {
+        if launch.deferred_show {
+            return;
+        }
         let clean = self.surface_state == PooledSurfaceState::Clean;
         let cloaked = !clean && set_overlay_cloaked(window, true);
         if !cloaked {
@@ -1825,6 +1788,7 @@ impl AreaOverlay {
                 set_overlay_topmost(window);
                 if cloaked {
                     self.surface_state = PooledSurfaceState::AwaitingFirstPaint;
+                    window.refresh();
                     self.schedule_uncloak_after_paint(window, focus, cx);
                 } else {
                     self.surface_state = PooledSurfaceState::Live;
@@ -1837,6 +1801,7 @@ impl AreaOverlay {
                 set_overlay_topmost(window);
             }
             PooledSurfaceState::Live => {
+                set_overlay_cloaked(window, false);
                 set_overlay_topmost(window);
                 if focus {
                     window.activate_window();
@@ -4254,11 +4219,51 @@ mod tests {
         }
     }
 
-    #[test]
-    fn early_show_requires_capture_exclusion_support() {
-        assert!(!super::can_show_before_freeze(19040, true));
-        assert!(!super::can_show_before_freeze(19041, false));
-        assert!(super::can_show_before_freeze(19041, true));
+    #[herogpui::test]
+    fn deferred_show_keeps_overlay_hidden_until_freeze_completes(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let config =
+            Arc::new(ConfigStore::load_at(dir.path().join("config.json")).expect("load config"));
+        cx.update(|cx| crate::state::set_test_state(cx, config));
+        let service = cx.read(crate::state::state);
+        let (_, visual) = herogpui::test::open_window(cx, |_, cx| {
+            super::AreaOverlay::with_focus(
+                gpui::Bounds::new(gpui::point(px(0.), px(0.)), size(px(400.), px(300.))),
+                1.,
+                service,
+                crate::capture::intent::CaptureIntent::Screenshot,
+                cx.focus_handle(),
+            )
+        });
+        visual.update(|window, _| {
+            assert!(!super::reveal_overlay_window(
+                window,
+                super::OverlayLaunch {
+                    focus: true,
+                    deferred_show: true,
+                    generation: 1,
+                },
+                true,
+            ));
+            assert!(!super::reveal_overlay_window(
+                window,
+                super::OverlayLaunch {
+                    focus: true,
+                    deferred_show: false,
+                    generation: 1,
+                },
+                false,
+            ));
+            assert!(super::reveal_overlay_window(
+                window,
+                super::OverlayLaunch {
+                    focus: true,
+                    deferred_show: false,
+                    generation: 1,
+                },
+                true,
+            ));
+        });
     }
 
     #[cfg(windows)]
@@ -4491,7 +4496,7 @@ mod tests {
                 super::OverlayLaunch {
                     focus: false,
                     deferred_show: true,
-                    generation: 0,
+                    generation: 2,
                 },
                 cx,
             )
@@ -4501,6 +4506,12 @@ mod tests {
                 .update(cx, |overlay, _, _| {
                     assert!(!overlay.parked);
                     assert!(overlay.rect.is_none());
+                    assert_eq!(overlay.surface_state, super::PooledSurfaceState::Clean);
+                })
+                .unwrap();
+            super::raise_all(2, cx);
+            reopened
+                .update(cx, |overlay, _, _| {
                     assert_eq!(overlay.surface_state, super::PooledSurfaceState::Live);
                 })
                 .unwrap();
@@ -4530,7 +4541,7 @@ mod tests {
                 super::OverlayLaunch {
                     focus: false,
                     deferred_show: true,
-                    generation: 0,
+                    generation: 1,
                 },
                 cx,
             )
@@ -4562,7 +4573,7 @@ mod tests {
                 super::OverlayLaunch {
                     focus: false,
                     deferred_show: true,
-                    generation: 0,
+                    generation: 2,
                 },
                 cx,
             )
@@ -4572,6 +4583,12 @@ mod tests {
                 .update(cx, |overlay, _, _| {
                     assert!(!overlay.parked);
                     assert!(overlay.rect.is_none());
+                    assert_eq!(overlay.surface_state, super::PooledSurfaceState::Dirty);
+                })
+                .unwrap();
+            super::raise_all(2, cx);
+            reopened
+                .update(cx, |overlay, _, _| {
                     assert_eq!(
                         overlay.surface_state,
                         super::PooledSurfaceState::AwaitingFirstPaint
