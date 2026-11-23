@@ -1,7 +1,6 @@
 use std::cell::{Cell, RefCell};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
-use std::fmt::Write as _;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
@@ -18,7 +17,9 @@ use crate::render::canvas::Canvas;
 
 const MAX_PATCH_PIXELS: f64 = 8_388_608.0;
 const MAX_PATCH_DIMENSION: f64 = 16_384.0;
+const MAX_INTERACTIVE_BLUR_PIXELS: f64 = 131_072.0;
 const CACHE_TTL_FRAMES: u64 = 4;
+const DRAG_CACHE_TTL_FRAMES: u64 = 1;
 
 #[derive(Clone, Copy)]
 pub struct RoundedClip<'a> {
@@ -75,6 +76,7 @@ impl Surface<'_> {
     }
 }
 
+#[cfg(test)]
 pub struct Patch {
     pub pixmap: Pixmap,
     pub x: f64,
@@ -92,6 +94,7 @@ pub struct PatchImage {
     pub height: f64,
 }
 
+#[cfg(test)]
 #[derive(Clone, Copy)]
 pub struct SamplingGrid {
     pub origin: (f32, f32),
@@ -103,19 +106,7 @@ pub struct SamplingGrid {
     pub dpi: f32,
 }
 
-pub fn needs_bounded_composition(surface: &Surface) -> bool {
-    needs_bounded_output(surface, 1.)
-}
-
-pub fn needs_bounded_output(surface: &Surface, scale: f64) -> bool {
-    let (left, top, right, bottom) = surface.bounds();
-    let width = (right - left) * scale;
-    let height = (bottom - top) * scale;
-    width > MAX_PATCH_DIMENSION - 1.
-        || height > MAX_PATCH_DIMENSION - 1.
-        || width * height > MAX_PATCH_PIXELS
-}
-
+#[cfg(test)]
 pub fn is_rasterized(annotation: &Annotation) -> bool {
     matches!(
         annotation,
@@ -139,6 +130,7 @@ fn padded(bounds: (f64, f64, f64, f64), padding: f64) -> (f64, f64, f64, f64) {
     )
 }
 
+#[cfg(test)]
 fn replay_bounds<'a>(
     target: (f64, f64, f64, f64),
     paints: impl DoubleEndedIterator<Item = ScreenshotPaint<'a>>,
@@ -290,25 +282,9 @@ fn raster_bounds(
     }
 }
 
-pub fn overlaps_redaction(
-    annotation: &Annotation,
-    beneath: &[ScreenshotPaint<'_>],
-    surface: &Surface,
-) -> bool {
-    let Some(bounds) = raster_bounds(annotation, surface, 1.) else {
-        return false;
-    };
-    beneath.iter().any(|earlier| {
-        let earlier = earlier.annotation();
-        if !matches!(earlier, Annotation::Redact { .. }) {
-            return false;
-        }
-        let redaction = padded(earlier.bounds(), 2.);
-        bounds.0 < redaction.2
-            && bounds.2 > redaction.0
-            && bounds.1 < redaction.3
-            && bounds.3 > redaction.1
-    })
+#[cfg(test)]
+fn bounds_overlap(a: (f64, f64, f64, f64), b: (f64, f64, f64, f64)) -> bool {
+    a.0 < b.2 && a.2 > b.0 && a.1 < b.3 && a.3 > b.1
 }
 
 fn fit_scale(width: f64, height: f64, scale: f64) -> f64 {
@@ -319,6 +295,7 @@ fn fit_scale(width: f64, height: f64, scale: f64) -> f64 {
     scale * (MAX_PATCH_PIXELS / pixels).sqrt()
 }
 
+#[cfg(test)]
 pub fn patch(
     paint: ScreenshotPaint<'_>,
     beneath: &[ScreenshotPaint<'_>],
@@ -328,6 +305,7 @@ pub fn patch(
     patch_padded(paint, beneath, surface, scale, 0.)
 }
 
+#[cfg(test)]
 fn paint_target_bounds(
     annotation: &Annotation,
     bounds: (f64, f64, f64, f64),
@@ -357,6 +335,7 @@ fn paint_target_bounds(
     }
 }
 
+#[cfg(test)]
 fn patch_padded(
     paint: ScreenshotPaint<'_>,
     beneath: &[ScreenshotPaint<'_>],
@@ -368,11 +347,13 @@ fn patch_padded(
     render_patch(paint, beneath, surface, bounds.sample, bounds.target, scale)
 }
 
+#[cfg(test)]
 struct PatchBounds {
     sample: (f64, f64, f64, f64),
     target: (f64, f64, f64, f64),
 }
 
+#[cfg(test)]
 fn patch_bounds(
     paint: ScreenshotPaint<'_>,
     beneath: &[ScreenshotPaint<'_>],
@@ -431,6 +412,7 @@ fn patch_bounds(
     Some(PatchBounds { sample, target })
 }
 
+#[cfg(test)]
 fn clipped_patch_bounds(surface: &Surface, bounds: PatchBounds) -> Option<PatchBounds> {
     let PatchBounds { sample, target } = bounds;
     let (surface_left, surface_top, surface_right, surface_bottom) = surface.bounds();
@@ -457,6 +439,7 @@ fn clipped_patch_bounds(surface: &Surface, bounds: PatchBounds) -> Option<PatchB
     })
 }
 
+#[cfg(test)]
 fn patch_scale(bounds: &PatchBounds, scale: f64) -> f64 {
     fit_scale(
         bounds.sample.2 - bounds.sample.0,
@@ -467,6 +450,7 @@ fn patch_scale(bounds: &PatchBounds, scale: f64) -> f64 {
     .min((MAX_PATCH_DIMENSION - 1.0) / (bounds.target.3 - bounds.target.1))
 }
 
+#[cfg(test)]
 fn render_patch(
     paint: ScreenshotPaint<'_>,
     beneath: &[ScreenshotPaint<'_>],
@@ -576,6 +560,11 @@ fn render_patch(
     }
     if surface.pixels.is_some() {
         for earlier in beneath {
+            if let Some(other) = raster_bounds(earlier.annotation(), surface, scale) {
+                if !bounds_overlap(other, bounds.sample) {
+                    continue;
+                }
+            }
             renderer::draw_screenshot_paint(&mut canvas, *earlier, surface.native_scale);
         }
     }
@@ -713,12 +702,22 @@ fn draw_backdrop(
         for column in 0..crop_width as usize {
             let source = from + column * 4;
             let pixel = to + column * 4;
-            let alpha = pixels[source + 3] as u32;
-            let premultiply = |value: u8| ((value as u32 * alpha + rounding) / 255) as u8;
-            target[pixel] = premultiply(pixels[source + 2]);
-            target[pixel + 1] = premultiply(pixels[source + 1]);
-            target[pixel + 2] = premultiply(pixels[source]);
-            target[pixel + 3] = alpha as u8;
+            let alpha = pixels[source + 3];
+            if alpha == 255 {
+                target[pixel] = pixels[source + 2];
+                target[pixel + 1] = pixels[source + 1];
+                target[pixel + 2] = pixels[source];
+                target[pixel + 3] = 255;
+            } else if alpha == 0 {
+                target[pixel..pixel + 4].fill(0);
+            } else {
+                let alpha_u32 = alpha as u32;
+                let premultiply = |value: u8| ((value as u32 * alpha_u32 + rounding) / 255) as u8;
+                target[pixel] = premultiply(pixels[source + 2]);
+                target[pixel + 1] = premultiply(pixels[source + 1]);
+                target[pixel + 2] = premultiply(pixels[source]);
+                target[pixel + 3] = alpha;
+            }
         }
     }
     canvas.draw_pixmap_blended(
@@ -736,45 +735,135 @@ struct Entry {
     frame: u64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum LayerSlot {
+    Committed,
+    Below,
+    Above,
+}
+
+struct CompositeEntry {
+    pixmap: Pixmap,
+    image: Arc<RenderImage>,
+    device_x: f64,
+    device_y: f64,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    scale: f64,
+    surface_key: u64,
+    paint_hashes: Vec<u64>,
+    content_hash: u64,
+    frame: u64,
+}
+
+struct SpriteEntry {
+    image: Arc<RenderImage>,
+    local_x: f64,
+    local_y: f64,
+    width: f64,
+    height: f64,
+    frame: u64,
+}
+
 thread_local! {
     static CACHE: RefCell<HashMap<u64, Entry>> = RefCell::new(HashMap::new());
+    static SPRITE_CACHE: RefCell<HashMap<u64, SpriteEntry>> = RefCell::new(HashMap::new());
+    static DRAG_CACHE: RefCell<HashMap<u64, Entry>> = RefCell::new(HashMap::new());
+    static COMPOSITE_CACHE: RefCell<HashMap<(Option<gpui::ImageId>, LayerSlot), CompositeEntry>> =
+        RefCell::new(HashMap::new());
+    static RETIRED_IMAGES: RefCell<Vec<Arc<RenderImage>>> = const { RefCell::new(Vec::new()) };
     static FRAME: Cell<u64> = const { Cell::new(0) };
 }
 
-pub struct FrameKeys {
-    hashes: Vec<u64>,
-    prefixes: Vec<u64>,
+pub fn advance_frame() {
+    FRAME.with(|frame| frame.set(frame.get().wrapping_add(1)));
 }
 
+#[cfg(test)]
+pub struct FrameKeys {
+    hashes: Vec<u64>,
+}
+
+#[cfg(test)]
 pub fn begin_frame(visible: &[ScreenshotPaint<'_>]) -> FrameKeys {
-    FRAME.with(|frame| frame.set(frame.get().wrapping_add(1)));
+    advance_frame();
     let hashes: Vec<u64> = visible.iter().map(|paint| hash_of(paint)).collect();
-    let mut prefixes = Vec::with_capacity(hashes.len());
-    let mut running = 0u64;
-    for hash in &hashes {
-        prefixes.push(running);
-        running = running.rotate_left(7) ^ hash;
-    }
-    FrameKeys { hashes, prefixes }
+    FrameKeys { hashes }
 }
 
 pub fn clear_cache() {
     CACHE.with(|cache| cache.borrow_mut().clear());
+    SPRITE_CACHE.with(|cache| cache.borrow_mut().clear());
+    DRAG_CACHE.with(|cache| cache.borrow_mut().clear());
+    COMPOSITE_CACHE.with(|cache| cache.borrow_mut().clear());
+    RETIRED_IMAGES.with(|retired| retired.borrow_mut().clear());
+}
+
+fn evict_stale_entries(
+    cache: &mut HashMap<u64, Entry>,
+    frame: u64,
+    ttl: u64,
+    out: &mut Vec<Arc<RenderImage>>,
+) {
+    let stale: Vec<u64> = cache
+        .iter()
+        .filter(|(_, entry)| frame.saturating_sub(entry.frame) >= ttl)
+        .map(|(key, _)| *key)
+        .collect();
+    for key in stale {
+        if let Some(entry) = cache.remove(&key) {
+            out.push(entry.patch.image);
+        }
+    }
 }
 
 pub fn end_frame(window: &mut gpui::Window) {
     let frame = FRAME.with(|frame| frame.get());
-    let evicted: Vec<Arc<RenderImage>> = CACHE.with(|cache| {
+    let mut evicted: Vec<Arc<RenderImage>> = Vec::new();
+    RETIRED_IMAGES.with(|retired| evicted.extend(retired.borrow_mut().drain(..)));
+    CACHE.with(|cache| {
+        evict_stale_entries(
+            &mut cache.borrow_mut(),
+            frame,
+            CACHE_TTL_FRAMES,
+            &mut evicted,
+        );
+    });
+    DRAG_CACHE.with(|cache| {
+        evict_stale_entries(
+            &mut cache.borrow_mut(),
+            frame,
+            DRAG_CACHE_TTL_FRAMES,
+            &mut evicted,
+        );
+    });
+    SPRITE_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
         let stale: Vec<u64> = cache
             .iter()
             .filter(|(_, entry)| frame.saturating_sub(entry.frame) >= CACHE_TTL_FRAMES)
             .map(|(key, _)| *key)
             .collect();
-        stale
-            .into_iter()
-            .filter_map(|key| cache.remove(&key).map(|entry| entry.patch.image))
-            .collect()
+        for key in stale {
+            if let Some(entry) = cache.remove(&key) {
+                evicted.push(entry.image);
+            }
+        }
+    });
+    COMPOSITE_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        let stale: Vec<(Option<gpui::ImageId>, LayerSlot)> = cache
+            .iter()
+            .filter(|(_, entry)| frame.saturating_sub(entry.frame) >= CACHE_TTL_FRAMES)
+            .map(|(key, _)| *key)
+            .collect();
+        for key in stale {
+            if let Some(entry) = cache.remove(&key) {
+                evicted.push(entry.image);
+            }
+        }
     });
     for image in evicted {
         let _ = window.drop_image(image);
@@ -782,18 +871,780 @@ pub fn end_frame(window: &mut gpui::Window) {
 }
 
 pub fn clear(window: &mut gpui::Window) {
-    let evicted: Vec<Arc<RenderImage>> = CACHE.with(|cache| {
-        cache
-            .borrow_mut()
-            .drain()
-            .map(|(_, entry)| entry.patch.image)
-            .collect()
+    let mut evicted: Vec<Arc<RenderImage>> = Vec::new();
+    RETIRED_IMAGES.with(|retired| evicted.extend(retired.borrow_mut().drain(..)));
+    CACHE.with(|cache| {
+        evicted.extend(
+            cache
+                .borrow_mut()
+                .drain()
+                .map(|(_, entry)| entry.patch.image),
+        );
+    });
+    DRAG_CACHE.with(|cache| {
+        evicted.extend(
+            cache
+                .borrow_mut()
+                .drain()
+                .map(|(_, entry)| entry.patch.image),
+        );
+    });
+    SPRITE_CACHE.with(|cache| {
+        evicted.extend(cache.borrow_mut().drain().map(|(_, entry)| entry.image));
+    });
+    COMPOSITE_CACHE.with(|cache| {
+        evicted.extend(cache.borrow_mut().drain().map(|(_, entry)| entry.image));
     });
     for image in evicted {
         let _ = window.drop_image(image);
     }
 }
 
+fn reads_background(paint: ScreenshotPaint<'_>) -> bool {
+    match paint.annotation() {
+        Annotation::Highlight { .. } => true,
+        Annotation::Redact { style, .. } => style != "blackout",
+        _ => false,
+    }
+}
+
+fn hash_rounded_clip(clip: Option<RoundedClip<'_>>, hasher: &mut DefaultHasher) {
+    if let Some(clip) = clip {
+        hasher.write_u8(1);
+        hasher.write_u32(clip.width);
+        hasher.write_u32(clip.height);
+        hasher.write_i64(clip.offset_x);
+        hasher.write_i64(clip.offset_y);
+        for edge in clip.edges {
+            edge.image.id.hash(hasher);
+        }
+    } else {
+        hasher.write_u8(0);
+    }
+}
+
+fn composite_surface_key(surface: &Surface, reads_surface: bool, transparent_only: bool) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    hasher.write_u8(u8::from(transparent_only));
+    hasher.write_u8(u8::from(reads_surface));
+    hasher.write_u64(surface.native_scale.to_bits());
+    hash_rounded_clip(surface.rounded_clip, &mut hasher);
+    if reads_surface {
+        surface.image_id.hash(&mut hasher);
+        hasher.write_u32(surface.width);
+        hasher.write_u32(surface.height);
+        hasher.write_u64(surface.offset_x.to_bits());
+        hasher.write_u64(surface.offset_y.to_bits());
+        hasher.write_u8(u8::from(surface.source_is_composed));
+        hasher.write_u8(u8::from(surface.pixels.is_some()));
+        surface.matte.hash(&mut hasher);
+        surface.composite_backdrop.hash(&mut hasher);
+        if let Some((image, x, y)) = surface.matte_image {
+            image.id.hash(&mut hasher);
+            hasher.write_u64(x.to_bits());
+            hasher.write_u64(y.to_bits());
+        }
+    }
+    hasher.finish()
+}
+
+fn blit_pixmap_region(
+    src: &Pixmap,
+    src_origin: (i64, i64),
+    dst: &mut Pixmap,
+    dst_origin: (i64, i64),
+) {
+    let src_w = i64::from(src.width());
+    let src_h = i64::from(src.height());
+    let dst_w = i64::from(dst.width());
+    let dst_h = i64::from(dst.height());
+    let x0 = src_origin.0.max(dst_origin.0);
+    let y0 = src_origin.1.max(dst_origin.1);
+    let x1 = (src_origin.0 + src_w).min(dst_origin.0 + dst_w);
+    let y1 = (src_origin.1 + src_h).min(dst_origin.1 + dst_h);
+    if x1 <= x0 || y1 <= y0 {
+        return;
+    }
+    let copy_bytes = (x1 - x0) as usize * 4;
+    let src_stride = src_w as usize * 4;
+    let dst_stride = dst_w as usize * 4;
+    let src_x = (x0 - src_origin.0) as usize * 4;
+    let dst_x = (x0 - dst_origin.0) as usize * 4;
+    let src_data = src.data();
+    let dst_data = dst.data_mut();
+    for y in y0..y1 {
+        let sy = (y - src_origin.1) as usize * src_stride + src_x;
+        let dy = (y - dst_origin.1) as usize * dst_stride + dst_x;
+        dst_data[dy..dy + copy_bytes].copy_from_slice(&src_data[sy..sy + copy_bytes]);
+    }
+}
+
+fn configure_composite_canvas(
+    canvas: &mut Canvas,
+    surface: &Surface,
+    device_x: f64,
+    device_y: f64,
+    scale: f64,
+) {
+    let (surface_left, surface_top, surface_right, surface_bottom) = surface.content_bounds();
+    let composition_origin = surface
+        .matte_image
+        .filter(|_| surface.composite_backdrop)
+        .map(|(_, x, y)| (x, y))
+        .unwrap_or((surface.offset_x, surface.offset_y));
+    canvas.translate(-device_x as f32, -device_y as f32);
+    canvas.scale(scale as f32, scale as f32);
+    canvas.set_screenshot_surface((
+        (surface_left * scale - device_x).floor() as i32,
+        (surface_top * scale - device_y).floor() as i32,
+        (surface_right * scale - device_x).ceil() as i32,
+        (surface_bottom * scale - device_y).ceil() as i32,
+    ));
+    canvas.set_pixel_grid_origin(composition_origin);
+    if surface.align_to_composition_grid {
+        canvas.set_patch_path_anchor(
+            (
+                (composition_origin.0 * scale) as f32,
+                (composition_origin.1 * scale) as f32,
+            ),
+            (device_x as f32, device_y as f32),
+        );
+    }
+}
+
+fn seed_surface_pixels(canvas: &mut Canvas, surface: &Surface, bounds: (f64, f64, f64, f64)) {
+    if let Some(pixels) = surface.pixels {
+        draw_backdrop(
+            canvas,
+            surface,
+            pixels,
+            bounds,
+            tiny_skia::BlendMode::DestinationOver,
+        );
+    }
+    if surface.composite_backdrop || surface.matte_image.is_some() {
+        if let Some((image, offset_x, offset_y)) = surface.matte_image {
+            if let Some(pixels) = image.as_bytes(0) {
+                let background = Surface {
+                    image_id: Some(image.id),
+                    width: image.size(0).width.into(),
+                    height: image.size(0).height.into(),
+                    offset_x,
+                    offset_y,
+                    source_is_composed: true,
+                    align_to_composition_grid: false,
+                    native_scale: surface.native_scale,
+                    rounded_clip: None,
+                    pixels: Some(pixels),
+                    matte: None,
+                    matte_image: None,
+                    composite_backdrop: false,
+                };
+                draw_backdrop(
+                    canvas,
+                    &background,
+                    pixels,
+                    bounds,
+                    tiny_skia::BlendMode::DestinationOver,
+                );
+            }
+        }
+    }
+}
+
+fn draw_paint_onto_composite(
+    canvas: &mut Canvas,
+    paint: ScreenshotPaint<'_>,
+    surface: &Surface,
+    canvas_device_x: f64,
+    canvas_device_y: f64,
+    scale: f64,
+    transparent_only: bool,
+) {
+    let annotation = paint.annotation();
+    if transparent_only {
+        if matches!(annotation, Annotation::Highlight { .. }) {
+            draw_sprite_annotation(canvas, annotation);
+            return;
+        }
+        if matches!(annotation, Annotation::Redact { style, .. } if style != "blackout") {
+            return;
+        }
+    }
+    match annotation {
+        Annotation::Highlight { .. } if surface.pixels.is_some() => {
+            if let Some(h_bounds) = raster_bounds(annotation, surface, scale) {
+                let limits = surface.bounds();
+                let clipped = (
+                    h_bounds.0.max(limits.0),
+                    h_bounds.1.max(limits.1),
+                    h_bounds.2.min(limits.2),
+                    h_bounds.3.min(limits.3),
+                );
+                if clipped.2 > clipped.0 && clipped.3 > clipped.1 {
+                    seed_surface_pixels(canvas, surface, clipped);
+                }
+            }
+            renderer::draw_screenshot_paint(canvas, paint, surface.native_scale);
+        }
+        Annotation::Redact { style, .. }
+            if (style == "blur" || style == "pixelate") && surface.pixels.is_some() =>
+        {
+            let Some(sample) = raster_bounds(annotation, surface, scale) else {
+                return;
+            };
+            let limits = surface.bounds();
+            let sample = (
+                sample.0.max(limits.0),
+                sample.1.max(limits.1),
+                sample.2.min(limits.2),
+                sample.3.min(limits.3),
+            );
+            if sample.2 <= sample.0 || sample.3 <= sample.1 {
+                return;
+            }
+            let target = annotation.bounds();
+            let target = (
+                target.0.max(sample.0),
+                target.1.max(sample.1),
+                target.2.min(sample.2),
+                target.3.min(sample.3),
+            );
+            if target.2 <= target.0 || target.3 <= target.1 {
+                return;
+            }
+            let sx0 = (sample.0 * scale).floor();
+            let sy0 = (sample.1 * scale).floor();
+            let sw = ((sample.2 * scale).ceil() - sx0).max(1.0) as u32;
+            let sh = ((sample.3 * scale).ceil() - sy0).max(1.0) as u32;
+            let Some(mut scratch) = Canvas::new(sw, sh) else {
+                return;
+            };
+            blit_pixmap_region(
+                canvas.pixmap(),
+                (canvas_device_x as i64, canvas_device_y as i64),
+                scratch.pixmap_mut(),
+                (sx0 as i64, sy0 as i64),
+            );
+            configure_composite_canvas(&mut scratch, surface, sx0, sy0, scale);
+            seed_surface_pixels(&mut scratch, surface, sample);
+            renderer::draw_screenshot_paint(&mut scratch, paint, surface.native_scale);
+            let tx0 = (target.0 * scale).floor().max(sx0);
+            let ty0 = (target.1 * scale).floor().max(sy0);
+            let tx1 = (target.2 * scale).ceil().min(sx0 + f64::from(sw));
+            let ty1 = (target.3 * scale).ceil().min(sy0 + f64::from(sh));
+            if tx1 <= tx0 || ty1 <= ty0 {
+                return;
+            }
+            let Some(rect) = tiny_skia::IntRect::from_xywh(
+                (tx0 - sx0) as i32,
+                (ty0 - sy0) as i32,
+                (tx1 - tx0) as u32,
+                (ty1 - ty0) as u32,
+            ) else {
+                return;
+            };
+            if let Some(mut cropped) = scratch.into_pixmap().clone_rect(rect) {
+                if let Some([red, green, blue]) = surface.matte {
+                    if let Some(fill_rect) = tiny_skia::Rect::from_xywh(
+                        0.,
+                        0.,
+                        cropped.width() as f32,
+                        cropped.height() as f32,
+                    ) {
+                        let mut matte_paint = tiny_skia::Paint::default();
+                        matte_paint.set_color_rgba8(red, green, blue, 255);
+                        matte_paint.blend_mode = tiny_skia::BlendMode::DestinationOver;
+                        cropped.fill_rect(
+                            fill_rect,
+                            &matte_paint,
+                            tiny_skia::Transform::identity(),
+                            None,
+                        );
+                    }
+                }
+                blit_pixmap_region(
+                    &cropped,
+                    (tx0 as i64, ty0 as i64),
+                    canvas.pixmap_mut(),
+                    (canvas_device_x as i64, canvas_device_y as i64),
+                );
+            }
+        }
+        _ => renderer::draw_screenshot_paint(canvas, paint, surface.native_scale),
+    }
+}
+
+fn apply_rounded_clip_to_pixmap(
+    pixmap: &Pixmap,
+    clip: RoundedClip<'_>,
+    device_x: f64,
+    device_y: f64,
+    scale: f64,
+) -> Option<Pixmap> {
+    let mut masked = pixmap.clone();
+    let mut mask = tiny_skia::Mask::new(masked.width(), masked.height())?;
+    let edges = clip
+        .edges
+        .iter()
+        .map(|edge| Some((edge, edge.image.as_bytes(0)?)))
+        .collect::<Option<Vec<_>>>()?;
+    let stride = masked.width() as usize;
+    let columns: Vec<_> = (0..stride)
+        .map(|x| ((x as f64 + 0.5 + device_x) / scale).floor() as i64)
+        .collect();
+    for (row_index, row) in mask.data_mut().chunks_exact_mut(stride).enumerate() {
+        let y = ((row_index as f64 + 0.5 + device_y) / scale).floor() as i64;
+        if y < 0 || y >= i64::from(clip.height) {
+            continue;
+        }
+        let y = y + clip.offset_y;
+        for (&x, alpha) in columns.iter().zip(row) {
+            if x < 0 || x >= i64::from(clip.width) {
+                continue;
+            }
+            *alpha = 255;
+            let x = x + clip.offset_x;
+            for (edge, pixels) in &edges {
+                let (left, top) = (i64::from(edge.x), i64::from(edge.y));
+                if x < left
+                    || y < top
+                    || x >= left + i64::from(edge.width)
+                    || y >= top + i64::from(edge.height)
+                {
+                    continue;
+                }
+                let size = edge.image.size(0);
+                let offset = (((y - top) as usize + edge.inset_y as usize)
+                    * u32::from(size.width) as usize
+                    + (x - left) as usize
+                    + edge.inset_x as usize)
+                    * 4
+                    + 3;
+                *alpha = 255 - *pixels.get(offset)?;
+                break;
+            }
+        }
+    }
+    masked.apply_mask(&mask);
+    Some(masked)
+}
+
+fn composite_render_image(
+    pixmap: &Pixmap,
+    surface: &Surface,
+    device_x: f64,
+    device_y: f64,
+    scale: f64,
+) -> Arc<RenderImage> {
+    if let Some(clip) = surface.rounded_clip {
+        if let Some(masked) = apply_rounded_clip_to_pixmap(pixmap, clip, device_x, device_y, scale)
+        {
+            return render_image(&masked);
+        }
+    }
+    render_image(pixmap)
+}
+
+pub fn composite_layer(
+    editor_id: Option<gpui::ImageId>,
+    slot: LayerSlot,
+    paints: &[ScreenshotPaint<'_>],
+    surface: &Surface,
+    clip_bounds: (f64, f64, f64, f64),
+    transparent_only: bool,
+) -> Option<PatchImage> {
+    if paints.is_empty() {
+        return None;
+    }
+    let paint_hashes: Vec<u64> = paints.iter().map(hash_of).collect();
+    let limits = clip_bounds;
+    let mut union: Option<(f64, f64, f64, f64)> = None;
+    for paint in paints {
+        let Some(bounds) = raster_bounds(paint.annotation(), surface, 1.0) else {
+            continue;
+        };
+        let bounds = (
+            bounds.0.max(limits.0),
+            bounds.1.max(limits.1),
+            bounds.2.min(limits.2),
+            bounds.3.min(limits.3),
+        );
+        if bounds.2 <= bounds.0 || bounds.3 <= bounds.1 {
+            continue;
+        }
+        union = Some(match union {
+            Some(existing) => (
+                existing.0.min(bounds.0),
+                existing.1.min(bounds.1),
+                existing.2.max(bounds.2),
+                existing.3.max(bounds.3),
+            ),
+            None => bounds,
+        });
+    }
+    let union = union?;
+    let raw_w = union.2 - union.0;
+    let raw_h = union.3 - union.1;
+    let composite_scale = fit_scale(raw_w, raw_h, 1.0)
+        .min((MAX_PATCH_DIMENSION - 1.0) / raw_w)
+        .min((MAX_PATCH_DIMENSION - 1.0) / raw_h);
+    if composite_scale <= 0.0 {
+        return None;
+    }
+    let device_x = (union.0 * composite_scale).floor();
+    let device_y = (union.1 * composite_scale).floor();
+    let width = ((union.2 * composite_scale).ceil() - device_x).max(1.0) as u32;
+    let height = ((union.3 * composite_scale).ceil() - device_y).max(1.0) as u32;
+    let reads_surface = !transparent_only && paints.iter().any(|paint| reads_background(*paint));
+    let surface_key = composite_surface_key(surface, reads_surface, transparent_only);
+    let cache_key = (editor_id, slot);
+    let frame = FRAME.with(|frame| frame.get());
+
+    enum Action {
+        Hit(PatchImage),
+        Append(usize, Pixmap, f64, f64, Arc<RenderImage>),
+        Rebuild(Option<Arc<RenderImage>>),
+    }
+
+    let action = COMPOSITE_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if let Some(entry) = cache.get_mut(&cache_key) {
+            if entry.surface_key == surface_key
+                && entry.scale == composite_scale
+                && entry.paint_hashes == paint_hashes
+                && entry.device_x == device_x
+                && entry.device_y == device_y
+                && entry.pixmap.width() == width
+                && entry.pixmap.height() == height
+            {
+                entry.frame = frame;
+                return Action::Hit(PatchImage {
+                    image: entry.image.clone(),
+                    x: entry.x,
+                    y: entry.y,
+                    width: entry.width,
+                    height: entry.height,
+                });
+            }
+            if entry.surface_key == surface_key
+                && entry.scale == composite_scale
+                && entry.paint_hashes.len() < paint_hashes.len()
+                && paint_hashes[..entry.paint_hashes.len()] == entry.paint_hashes[..]
+            {
+                let old = cache.remove(&cache_key).unwrap();
+                return Action::Append(
+                    old.paint_hashes.len(),
+                    old.pixmap,
+                    old.device_x,
+                    old.device_y,
+                    old.image,
+                );
+            }
+            let old = cache.remove(&cache_key).unwrap();
+            return Action::Rebuild(Some(old.image));
+        }
+        Action::Rebuild(None)
+    });
+
+    let (pixmap, retired_image) = match action {
+        Action::Hit(patch) => return Some(patch),
+        Action::Append(old_count, old_pixmap, old_dx, old_dy, old_image) => {
+            let mut canvas = if old_dx == device_x
+                && old_dy == device_y
+                && old_pixmap.width() == width
+                && old_pixmap.height() == height
+            {
+                Canvas::from_pixmap(old_pixmap)
+            } else {
+                let mut grown = Pixmap::new(width, height)?;
+                blit_pixmap_region(
+                    &old_pixmap,
+                    (old_dx as i64, old_dy as i64),
+                    &mut grown,
+                    (device_x as i64, device_y as i64),
+                );
+                Canvas::from_pixmap(grown)
+            };
+            configure_composite_canvas(&mut canvas, surface, device_x, device_y, composite_scale);
+            for paint in &paints[old_count..] {
+                draw_paint_onto_composite(
+                    &mut canvas,
+                    *paint,
+                    surface,
+                    device_x,
+                    device_y,
+                    composite_scale,
+                    transparent_only,
+                );
+            }
+            (canvas.into_pixmap(), Some(old_image))
+        }
+        Action::Rebuild(old_image) => {
+            let mut canvas = Canvas::new(width, height)?;
+            configure_composite_canvas(&mut canvas, surface, device_x, device_y, composite_scale);
+            for paint in paints {
+                draw_paint_onto_composite(
+                    &mut canvas,
+                    *paint,
+                    surface,
+                    device_x,
+                    device_y,
+                    composite_scale,
+                    transparent_only,
+                );
+            }
+            (canvas.into_pixmap(), old_image)
+        }
+    };
+
+    if let Some(old_image) = retired_image {
+        RETIRED_IMAGES.with(|retired| retired.borrow_mut().push(old_image));
+    }
+
+    let image = composite_render_image(&pixmap, surface, device_x, device_y, composite_scale);
+    let x = device_x / composite_scale;
+    let y = device_y / composite_scale;
+    let patch_width = f64::from(width) / composite_scale;
+    let patch_height = f64::from(height) / composite_scale;
+    let mut content_hasher = DefaultHasher::new();
+    surface_key.hash(&mut content_hasher);
+    paint_hashes.hash(&mut content_hasher);
+    let content_hash = content_hasher.finish();
+    let result = PatchImage {
+        image: image.clone(),
+        x,
+        y,
+        width: patch_width,
+        height: patch_height,
+    };
+    COMPOSITE_CACHE.with(|cache| {
+        cache.borrow_mut().insert(
+            cache_key,
+            CompositeEntry {
+                pixmap,
+                image,
+                device_x,
+                device_y,
+                x,
+                y,
+                width: patch_width,
+                height: patch_height,
+                scale: composite_scale,
+                surface_key,
+                paint_hashes,
+                content_hash,
+                frame,
+            },
+        );
+    });
+    Some(result)
+}
+
+pub fn effect_over_layer(
+    editor_id: Option<gpui::ImageId>,
+    base_slot: Option<LayerSlot>,
+    paint: ScreenshotPaint<'_>,
+    surface: &Surface,
+    scale: f64,
+    interactive: bool,
+) -> Option<PatchImage> {
+    let annotation = paint.annotation();
+    let fast_surface = if interactive {
+        Surface {
+            rounded_clip: None,
+            ..*surface
+        }
+    } else {
+        *surface
+    };
+    let render_scale = match annotation {
+        Annotation::Redact { style, .. } if style == "blur" => {
+            if interactive {
+                let base = scale.clamp(0.25, 1.0);
+                if let Some(bounds) = raster_bounds(annotation, &fast_surface, base) {
+                    let w = (bounds.2 - bounds.0).max(1.0);
+                    let h = (bounds.3 - bounds.1).max(1.0);
+                    let pixels = w * base * h * base;
+                    if pixels > MAX_INTERACTIVE_BLUR_PIXELS {
+                        (base * (MAX_INTERACTIVE_BLUR_PIXELS / pixels).sqrt()).max(0.25)
+                    } else {
+                        base
+                    }
+                } else {
+                    base
+                }
+            } else {
+                1.0
+            }
+        }
+        Annotation::Redact { .. } => 1.0,
+        _ => scale.clamp(0.25, 1.0),
+    };
+
+    let base_hash = base_slot
+        .and_then(|slot| {
+            COMPOSITE_CACHE.with(|cache| {
+                cache
+                    .borrow()
+                    .get(&(editor_id, slot))
+                    .map(|entry| entry.content_hash)
+            })
+        })
+        .unwrap_or(0);
+    let mut hasher = DefaultHasher::new();
+    hasher.write_u8(201);
+    hasher.write_u64(hash_of(&paint));
+    hasher.write_u64(base_hash);
+    hasher.write_u64(composite_surface_key(&fast_surface, true, false));
+    hasher.write_u64(render_scale.to_bits());
+    hasher.write_u8(u8::from(interactive));
+    let key = hasher.finish();
+    let frame = FRAME.with(|frame| frame.get());
+
+    let cached = if interactive {
+        DRAG_CACHE.with(|cache| {
+            cache.borrow_mut().get_mut(&key).map(|entry| {
+                entry.frame = frame;
+                entry.patch.clone()
+            })
+        })
+    } else {
+        CACHE.with(|cache| {
+            cache.borrow_mut().get_mut(&key).map(|entry| {
+                entry.frame = frame;
+                entry.patch.clone()
+            })
+        })
+    };
+    if let Some(cached) = cached {
+        return Some(cached);
+    }
+
+    let sample = raster_bounds(annotation, &fast_surface, render_scale)?;
+    let limits = fast_surface.bounds();
+    let sample = (
+        sample.0.max(limits.0),
+        sample.1.max(limits.1),
+        sample.2.min(limits.2),
+        sample.3.min(limits.3),
+    );
+    if sample.2 <= sample.0 || sample.3 <= sample.1 {
+        return None;
+    }
+    let target = if matches!(annotation, Annotation::Redact { .. }) {
+        let t = annotation.bounds();
+        (
+            t.0.max(sample.0),
+            t.1.max(sample.1),
+            t.2.min(sample.2),
+            t.3.min(sample.3),
+        )
+    } else {
+        sample
+    };
+    if target.2 <= target.0 || target.3 <= target.1 {
+        return None;
+    }
+    let raw_w = sample.2 - sample.0;
+    let raw_h = sample.3 - sample.1;
+    let actual_scale = fit_scale(raw_w, raw_h, render_scale)
+        .min((MAX_PATCH_DIMENSION - 1.0) / raw_w)
+        .min((MAX_PATCH_DIMENSION - 1.0) / raw_h);
+    if actual_scale <= 0.0 {
+        return None;
+    }
+    let sx0 = (sample.0 * actual_scale).floor();
+    let sy0 = (sample.1 * actual_scale).floor();
+    let sw = ((sample.2 * actual_scale).ceil() - sx0).max(1.0) as u32;
+    let sh = ((sample.3 * actual_scale).ceil() - sy0).max(1.0) as u32;
+    let mut scratch = Canvas::new(sw, sh)?;
+    configure_composite_canvas(&mut scratch, &fast_surface, sx0, sy0, actual_scale);
+
+    if let Some(slot) = base_slot {
+        COMPOSITE_CACHE.with(|cache| {
+            let cache = cache.borrow();
+            if let Some(base) = cache.get(&(editor_id, slot)) {
+                if (base.scale - actual_scale).abs() < 1e-6 {
+                    blit_pixmap_region(
+                        &base.pixmap,
+                        (base.device_x as i64, base.device_y as i64),
+                        scratch.pixmap_mut(),
+                        (sx0 as i64, sy0 as i64),
+                    );
+                } else {
+                    scratch.draw_pixmap(
+                        base.pixmap.as_ref(),
+                        base.x as f32,
+                        base.y as f32,
+                        base.width as f32,
+                        base.height as f32,
+                    );
+                }
+            }
+        });
+    }
+    seed_surface_pixels(&mut scratch, &fast_surface, sample);
+    renderer::draw_screenshot_paint(&mut scratch, paint, fast_surface.native_scale);
+
+    let tx0 = (target.0 * actual_scale).floor().max(sx0);
+    let ty0 = (target.1 * actual_scale).floor().max(sy0);
+    let tx1 = (target.2 * actual_scale).ceil().min(sx0 + f64::from(sw));
+    let ty1 = (target.3 * actual_scale).ceil().min(sy0 + f64::from(sh));
+    if tx1 <= tx0 || ty1 <= ty0 {
+        return None;
+    }
+    let rect = tiny_skia::IntRect::from_xywh(
+        (tx0 - sx0) as i32,
+        (ty0 - sy0) as i32,
+        (tx1 - tx0) as u32,
+        (ty1 - ty0) as u32,
+    )?;
+    let mut pixmap = scratch.into_pixmap().clone_rect(rect)?;
+    if let Some([red, green, blue]) = fast_surface.matte {
+        let mut matte_paint = tiny_skia::Paint::default();
+        matte_paint.set_color_rgba8(red, green, blue, 255);
+        matte_paint.blend_mode = tiny_skia::BlendMode::DestinationOver;
+        pixmap.fill_rect(
+            tiny_skia::Rect::from_xywh(0., 0., pixmap.width() as f32, pixmap.height() as f32)?,
+            &matte_paint,
+            tiny_skia::Transform::identity(),
+            None,
+        );
+    }
+    let image = composite_render_image(&pixmap, &fast_surface, tx0, ty0, actual_scale);
+    let value = PatchImage {
+        image,
+        x: tx0 / actual_scale,
+        y: ty0 / actual_scale,
+        width: f64::from(pixmap.width()) / actual_scale,
+        height: f64::from(pixmap.height()) / actual_scale,
+    };
+    if interactive {
+        DRAG_CACHE.with(|cache| {
+            cache.borrow_mut().insert(
+                key,
+                Entry {
+                    patch: value.clone(),
+                    frame,
+                },
+            );
+        });
+    } else {
+        CACHE.with(|cache| {
+            cache.borrow_mut().insert(
+                key,
+                Entry {
+                    patch: value.clone(),
+                    frame,
+                },
+            );
+        });
+    }
+    Some(value)
+}
+
+#[cfg(test)]
 pub fn image(
     keys: &FrameKeys,
     index: usize,
@@ -808,7 +1659,7 @@ pub fn image(
     } else {
         scale
     };
-    let key = fingerprint(keys, index, surface, scale)?;
+    let key = fingerprint(keys, index, paint, beneath, surface, scale, 0.)?;
     let frame = FRAME.with(|frame| frame.get());
     let cached = CACHE.with(|cache| {
         cache.borrow_mut().get_mut(&key).map(|entry| {
@@ -840,6 +1691,491 @@ pub fn image(
     Some(value)
 }
 
+fn empty_surface() -> Surface<'static> {
+    Surface {
+        image_id: None,
+        width: 0,
+        height: 0,
+        offset_x: 0.0,
+        offset_y: 0.0,
+        source_is_composed: false,
+        align_to_composition_grid: false,
+        native_scale: 1.0,
+        rounded_clip: None,
+        pixels: None,
+        matte: None,
+        matte_image: None,
+        composite_backdrop: false,
+    }
+}
+
+fn quantize_coord(value: f64) -> i64 {
+    (value * 1024.0).round() as i64
+}
+
+fn hash_sprite_geometry(annotation: &Annotation, hasher: &mut DefaultHasher) -> bool {
+    let (ax, ay) = annotation.anchor();
+    match annotation {
+        Annotation::Pen {
+            points,
+            stroke,
+            stroke_width,
+            ..
+        } => {
+            hasher.write_u8(1);
+            stroke.hash(hasher);
+            hasher.write_u64(stroke_width.to_bits());
+            hasher.write_usize(points.len());
+            for pair in points.as_chunks::<2>().0 {
+                hasher.write_i64(quantize_coord(pair[0] - ax));
+                hasher.write_i64(quantize_coord(pair[1] - ay));
+            }
+            true
+        }
+        Annotation::Highlight {
+            points,
+            fill,
+            opacity,
+            stroke_width,
+            ..
+        } => {
+            hasher.write_u8(2);
+            fill.hash(hasher);
+            hasher.write_u64(opacity.to_bits());
+            hasher.write_u64(stroke_width.to_bits());
+            hasher.write_usize(points.len());
+            for pair in points.as_chunks::<2>().0 {
+                hasher.write_i64(quantize_coord(pair[0] - ax));
+                hasher.write_i64(quantize_coord(pair[1] - ay));
+            }
+            true
+        }
+        Annotation::Rectangle {
+            width,
+            height,
+            stroke,
+            stroke_width,
+            fill,
+            ..
+        } => {
+            hasher.write_u8(3);
+            hasher.write_i64(quantize_coord(*width));
+            hasher.write_i64(quantize_coord(*height));
+            stroke.hash(hasher);
+            hasher.write_u64(stroke_width.to_bits());
+            fill.hash(hasher);
+            true
+        }
+        Annotation::Circle {
+            radius,
+            stroke,
+            stroke_width,
+            fill,
+            ..
+        } => {
+            hasher.write_u8(4);
+            hasher.write_i64(quantize_coord(*radius));
+            stroke.hash(hasher);
+            hasher.write_u64(stroke_width.to_bits());
+            fill.hash(hasher);
+            true
+        }
+        Annotation::Line {
+            points,
+            stroke,
+            stroke_width,
+            ..
+        } => {
+            hasher.write_u8(5);
+            hasher.write_i64(quantize_coord(points[2] - points[0]));
+            hasher.write_i64(quantize_coord(points[3] - points[1]));
+            stroke.hash(hasher);
+            hasher.write_u64(stroke_width.to_bits());
+            true
+        }
+        Annotation::Arrow {
+            points,
+            stroke,
+            stroke_width,
+            arrow_style,
+            bend_offset,
+            ..
+        } => {
+            hasher.write_u8(6);
+            hasher.write_i64(quantize_coord(points[2] - points[0]));
+            hasher.write_i64(quantize_coord(points[3] - points[1]));
+            stroke.hash(hasher);
+            hasher.write_u64(stroke_width.to_bits());
+            arrow_style.hash(hasher);
+            match bend_offset {
+                Some(offset) => {
+                    hasher.write_u8(1);
+                    hasher.write_i64(quantize_coord(offset.x));
+                    hasher.write_i64(quantize_coord(offset.y));
+                }
+                None => hasher.write_u8(0),
+            }
+            true
+        }
+        Annotation::Text {
+            text,
+            font_size,
+            fill,
+            font_family,
+            background_color,
+            background_opacity,
+            background_padding,
+            background_radius,
+            rotation,
+            ..
+        } => {
+            hasher.write_u8(7);
+            text.hash(hasher);
+            hasher.write_u64(font_size.to_bits());
+            fill.hash(hasher);
+            font_family.hash(hasher);
+            background_color.hash(hasher);
+            background_opacity.map(f64::to_bits).hash(hasher);
+            match background_padding {
+                Some(offset) => {
+                    hasher.write_u8(1);
+                    hasher.write_i64(quantize_coord(offset.x));
+                    hasher.write_i64(quantize_coord(offset.y));
+                }
+                None => hasher.write_u8(0),
+            }
+            background_radius.map(f64::to_bits).hash(hasher);
+            rotation.map(quantize_coord).hash(hasher);
+            true
+        }
+        Annotation::Number {
+            display_value,
+            fill,
+            size,
+            ..
+        } => {
+            hasher.write_u8(8);
+            display_value.hash(hasher);
+            fill.hash(hasher);
+            size.hash(hasher);
+            true
+        }
+        Annotation::Redact { .. } => false,
+    }
+}
+
+fn draw_sprite_annotation(canvas: &mut Canvas, annotation: &Annotation) {
+    if let Annotation::Highlight {
+        points,
+        fill,
+        opacity,
+        stroke_width,
+        ..
+    } = annotation
+    {
+        let outline = renderer::highlighter_outline(points, *stroke_width);
+        let Some((first, rest)) = outline.split_first() else {
+            return;
+        };
+        let mut builder = tiny_skia::PathBuilder::new();
+        builder.move_to(first.0 as f32, first.1 as f32);
+        for point in rest {
+            builder.line_to(point.0 as f32, point.1 as f32);
+        }
+        builder.close();
+        let Some(path) = builder.finish() else {
+            return;
+        };
+        canvas.save();
+        let previous_alpha = canvas.global_alpha();
+        canvas.set_global_alpha(previous_alpha * *opacity as f32);
+        canvas.fill_path(
+            &path,
+            crate::render::color::parse_or(fill, tiny_skia::Color::BLACK),
+            tiny_skia::FillRule::Winding,
+        );
+        canvas.restore();
+        return;
+    }
+    renderer::draw(canvas, annotation);
+}
+
+pub fn sprite_image(annotation: &Annotation, scale: f64) -> Option<PatchImage> {
+    if scale <= 0.0 || matches!(annotation, Annotation::Redact { .. }) {
+        return None;
+    }
+    let mut hasher = DefaultHasher::new();
+    hasher.write_u8(0);
+    if !hash_sprite_geometry(annotation, &mut hasher) {
+        return None;
+    }
+    hasher.write_u64(scale.to_bits());
+    let key = hasher.finish();
+    let (ax, ay) = annotation.anchor();
+    let frame = FRAME.with(|frame| frame.get());
+    let cached = SPRITE_CACHE.with(|cache| {
+        cache.borrow_mut().get_mut(&key).map(|entry| {
+            entry.frame = frame;
+            PatchImage {
+                image: entry.image.clone(),
+                x: ax + entry.local_x,
+                y: ay + entry.local_y,
+                width: entry.width,
+                height: entry.height,
+            }
+        })
+    });
+    if let Some(cached) = cached {
+        return Some(cached);
+    }
+
+    let mut local = annotation.clone();
+    local.translate(-ax, -ay);
+    let surface = empty_surface();
+    let bounds = raster_bounds(&local, &surface, scale)?;
+    let raw_width = (bounds.2 - bounds.0).max(1.0);
+    let raw_height = (bounds.3 - bounds.1).max(1.0);
+    let sprite_scale = fit_scale(raw_width, raw_height, scale)
+        .min((MAX_PATCH_DIMENSION - 1.0) / raw_width)
+        .min((MAX_PATCH_DIMENSION - 1.0) / raw_height);
+    if sprite_scale <= 0.0 {
+        return None;
+    }
+    let device_x = (bounds.0 * sprite_scale).floor();
+    let device_y = (bounds.1 * sprite_scale).floor();
+    let width = ((bounds.2 * sprite_scale).ceil() - device_x).max(1.0) as u32;
+    let height = ((bounds.3 * sprite_scale).ceil() - device_y).max(1.0) as u32;
+    let mut canvas = Canvas::new(width, height)?;
+    canvas.translate(-device_x as f32, -device_y as f32);
+    canvas.scale(sprite_scale as f32, sprite_scale as f32);
+    draw_sprite_annotation(&mut canvas, &local);
+    let image = render_image(canvas.pixmap());
+    let local_x = device_x / sprite_scale;
+    let local_y = device_y / sprite_scale;
+    let patch_width = f64::from(width) / sprite_scale;
+    let patch_height = f64::from(height) / sprite_scale;
+    SPRITE_CACHE.with(|cache| {
+        cache.borrow_mut().insert(
+            key,
+            SpriteEntry {
+                image: image.clone(),
+                local_x,
+                local_y,
+                width: patch_width,
+                height: patch_height,
+                frame,
+            },
+        );
+    });
+    Some(PatchImage {
+        image,
+        x: ax + local_x,
+        y: ay + local_y,
+        width: patch_width,
+        height: patch_height,
+    })
+}
+
+pub fn halo_sprite_image(
+    annotation: &Annotation,
+    scale: f64,
+    halo_stroke_width: f32,
+    rgba: [u8; 4],
+) -> Option<PatchImage> {
+    if scale <= 0.0
+        || !matches!(
+            annotation,
+            Annotation::Pen { .. } | Annotation::Highlight { .. }
+        )
+    {
+        return None;
+    }
+    let mut hasher = DefaultHasher::new();
+    hasher.write_u8(1);
+    if !hash_sprite_geometry(annotation, &mut hasher) {
+        return None;
+    }
+    hasher.write_u64(scale.to_bits());
+    hasher.write_u32(halo_stroke_width.to_bits());
+    hasher.write(&rgba);
+    let key = hasher.finish();
+    let (ax, ay) = annotation.anchor();
+    let frame = FRAME.with(|frame| frame.get());
+    let cached = SPRITE_CACHE.with(|cache| {
+        cache.borrow_mut().get_mut(&key).map(|entry| {
+            entry.frame = frame;
+            PatchImage {
+                image: entry.image.clone(),
+                x: ax + entry.local_x,
+                y: ay + entry.local_y,
+                width: entry.width,
+                height: entry.height,
+            }
+        })
+    });
+    if let Some(cached) = cached {
+        return Some(cached);
+    }
+
+    let mut local = annotation.clone();
+    local.translate(-ax, -ay);
+    let surface = empty_surface();
+    let bounds = padded(
+        raster_bounds(&local, &surface, scale)?,
+        f64::from(halo_stroke_width) + 2.0,
+    );
+    let raw_width = (bounds.2 - bounds.0).max(1.0);
+    let raw_height = (bounds.3 - bounds.1).max(1.0);
+    let sprite_scale = fit_scale(raw_width, raw_height, scale)
+        .min((MAX_PATCH_DIMENSION - 1.0) / raw_width)
+        .min((MAX_PATCH_DIMENSION - 1.0) / raw_height);
+    if sprite_scale <= 0.0 {
+        return None;
+    }
+    let device_x = (bounds.0 * sprite_scale).floor();
+    let device_y = (bounds.1 * sprite_scale).floor();
+    let width = ((bounds.2 * sprite_scale).ceil() - device_x).max(1.0) as u32;
+    let height = ((bounds.3 * sprite_scale).ceil() - device_y).max(1.0) as u32;
+    let mut canvas = Canvas::new(width, height)?;
+    canvas.translate(-device_x as f32, -device_y as f32);
+    canvas.scale(sprite_scale as f32, sprite_scale as f32);
+    let color = tiny_skia::Color::from_rgba8(rgba[0], rgba[1], rgba[2], rgba[3]);
+    let stroke = tiny_skia::Stroke {
+        width: halo_stroke_width,
+        line_cap: tiny_skia::LineCap::Round,
+        line_join: tiny_skia::LineJoin::Round,
+        ..tiny_skia::Stroke::default()
+    };
+    let path = match &local {
+        Annotation::Pen {
+            points,
+            stroke_width,
+            ..
+        } => {
+            let outline = renderer::pen_outline(points, *stroke_width);
+            let first = outline.first()?;
+            let mut builder = tiny_skia::PathBuilder::new();
+            builder.move_to(first.0 as f32, first.1 as f32);
+            for (control, end) in renderer::freehand_segments(&outline) {
+                builder.quad_to(
+                    control.0 as f32,
+                    control.1 as f32,
+                    end.0 as f32,
+                    end.1 as f32,
+                );
+            }
+            builder.close();
+            builder.finish()?
+        }
+        Annotation::Highlight {
+            points,
+            stroke_width,
+            ..
+        } => {
+            let outline = renderer::highlighter_outline(points, *stroke_width);
+            let (first, rest) = outline.split_first()?;
+            let mut builder = tiny_skia::PathBuilder::new();
+            builder.move_to(first.0 as f32, first.1 as f32);
+            for point in rest {
+                builder.line_to(point.0 as f32, point.1 as f32);
+            }
+            builder.close();
+            builder.finish()?
+        }
+        _ => return None,
+    };
+    canvas.stroke_path(&path, color, &stroke);
+    let image = render_image(canvas.pixmap());
+    let local_x = device_x / sprite_scale;
+    let local_y = device_y / sprite_scale;
+    let patch_width = f64::from(width) / sprite_scale;
+    let patch_height = f64::from(height) / sprite_scale;
+    SPRITE_CACHE.with(|cache| {
+        cache.borrow_mut().insert(
+            key,
+            SpriteEntry {
+                image: image.clone(),
+                local_x,
+                local_y,
+                width: patch_width,
+                height: patch_height,
+                frame,
+            },
+        );
+    });
+    Some(PatchImage {
+        image,
+        x: ax + local_x,
+        y: ay + local_y,
+        width: patch_width,
+        height: patch_height,
+    })
+}
+
+#[cfg(test)]
+pub fn interactive_redact_image(
+    keys: &FrameKeys,
+    index: usize,
+    paint: ScreenshotPaint<'_>,
+    beneath: &[ScreenshotPaint<'_>],
+    surface: &Surface,
+    scale: f64,
+) -> Option<PatchImage> {
+    let fast_surface = Surface {
+        rounded_clip: None,
+        ..*surface
+    };
+    let render_scale = match paint.annotation() {
+        Annotation::Redact { style, .. } if style == "blur" => {
+            let base = scale.clamp(0.25, 1.0);
+            if let Some(bounds) = raster_bounds(paint.annotation(), &fast_surface, base) {
+                let width = (bounds.2 - bounds.0).max(1.0);
+                let height = (bounds.3 - bounds.1).max(1.0);
+                let pixels = width * base * height * base;
+                if pixels > MAX_INTERACTIVE_BLUR_PIXELS {
+                    (base * (MAX_INTERACTIVE_BLUR_PIXELS / pixels).sqrt()).max(0.25)
+                } else {
+                    base
+                }
+            } else {
+                base
+            }
+        }
+        _ => 1.0,
+    };
+    let key = fingerprint(keys, index, paint, beneath, &fast_surface, render_scale, 0.)?;
+    let frame = FRAME.with(|frame| frame.get());
+    let cached = DRAG_CACHE.with(|cache| {
+        cache.borrow_mut().get_mut(&key).map(|entry| {
+            entry.frame = frame;
+            entry.patch.clone()
+        })
+    });
+    if let Some(cached) = cached {
+        return Some(cached);
+    }
+
+    let patch = patch(paint, beneath, &fast_surface, render_scale)?;
+    let value = PatchImage {
+        image: render_image(&patch.pixmap),
+        x: patch.x,
+        y: patch.y,
+        width: patch.width,
+        height: patch.height,
+    };
+    DRAG_CACHE.with(|cache| {
+        cache.borrow_mut().insert(
+            key,
+            Entry {
+                patch: value.clone(),
+                frame,
+            },
+        )
+    });
+    Some(value)
+}
+
+#[cfg(test)]
 #[derive(Clone, Copy)]
 struct AlignedBounds {
     left: f64,
@@ -849,6 +2185,7 @@ struct AlignedBounds {
     pixels: (f64, f64, f64, f64),
 }
 
+#[cfg(test)]
 fn aligned_bounds(
     paint: ScreenshotPaint<'_>,
     surface: &Surface,
@@ -908,6 +2245,7 @@ fn aligned_bounds(
     })
 }
 
+#[cfg(test)]
 pub fn aligned_image(
     keys: &FrameKeys,
     index: usize,
@@ -919,17 +2257,7 @@ pub fn aligned_image(
     aligned_tile(keys, index, paint, beneath, surface, grid, None)
 }
 
-pub fn aligned_images(
-    keys: &FrameKeys,
-    index: usize,
-    paint: ScreenshotPaint<'_>,
-    beneath: &[ScreenshotPaint<'_>],
-    surface: &Surface,
-    grid: SamplingGrid,
-) -> Option<Vec<PatchImage>> {
-    aligned_images_with_limit(keys, index, paint, beneath, surface, grid, MAX_PATCH_PIXELS)
-}
-
+#[cfg(test)]
 fn aligned_images_with_limit(
     keys: &FrameKeys,
     index: usize,
@@ -975,6 +2303,7 @@ fn aligned_images_with_limit(
     Some(patches)
 }
 
+#[cfg(test)]
 fn aligned_tile(
     keys: &FrameKeys,
     index: usize,
@@ -989,17 +2318,25 @@ fn aligned_tile(
         let value = value * grid.dpi;
         (value.abs() - 0.5).ceil().copysign(value) as f64
     };
+    let left_snapped = snap(grid.stage_bounds.0);
+    let top_snapped = snap(grid.stage_bounds.1);
+    let scale_x =
+        (snap(grid.stage_bounds.0 + grid.stage_bounds.2) - left_snapped) / grid.stage_size.0;
+    let scale_y =
+        (snap(grid.stage_bounds.1 + grid.stage_bounds.3) - top_snapped) / grid.stage_size.1;
+    if scale_x <= 0. || scale_y <= 0. {
+        return None;
+    }
+    let guard = (1. / scale_x.min(scale_y)).ceil() + 2.;
     let mut hasher = DefaultHasher::new();
-    hasher.write_u64(fingerprint(keys, index, surface, 1.)?);
+    hasher.write_u64(fingerprint(
+        keys, index, paint, beneath, surface, 1., guard,
+    )?);
     hasher.write_u8(1);
-    hasher.write_u64((snap(grid.stage_bounds.0) - snap(grid.origin.0)).to_bits());
-    hasher.write_u64((snap(grid.stage_bounds.1) - snap(grid.origin.1)).to_bits());
-    hasher.write_u64(
-        (snap(grid.stage_bounds.0 + grid.stage_bounds.2) - snap(grid.stage_bounds.0)).to_bits(),
-    );
-    hasher.write_u64(
-        (snap(grid.stage_bounds.1 + grid.stage_bounds.3) - snap(grid.stage_bounds.1)).to_bits(),
-    );
+    hasher.write_u64((left_snapped - snap(grid.origin.0)).to_bits());
+    hasher.write_u64((top_snapped - snap(grid.origin.1)).to_bits());
+    hasher.write_u64((snap(grid.stage_bounds.0 + grid.stage_bounds.2) - left_snapped).to_bits());
+    hasher.write_u64((snap(grid.stage_bounds.1 + grid.stage_bounds.3) - top_snapped).to_bits());
     for value in [
         grid.stage_bounds.2,
         grid.stage_bounds.3,
@@ -1128,15 +2465,7 @@ fn aligned_tile(
     Some(value)
 }
 
-struct Fingerprint(DefaultHasher);
-
-impl std::fmt::Write for Fingerprint {
-    fn write_str(&mut self, text: &str) -> std::fmt::Result {
-        self.0.write(text.as_bytes());
-        Ok(())
-    }
-}
-
+#[cfg(test)]
 struct AlignedSampling {
     left: f64,
     top: f64,
@@ -1148,6 +2477,7 @@ struct AlignedSampling {
     matte: Option<[u8; 3]>,
 }
 
+#[cfg(test)]
 impl AlignedSampling {
     fn compose_tiles(
         &self,
@@ -1292,15 +2622,249 @@ impl AlignedSampling {
 }
 
 fn hash_of(paint: &ScreenshotPaint<'_>) -> u64 {
-    let mut hasher = Fingerprint(DefaultHasher::new());
-    let _ = write!(hasher, "{paint:?}");
-    hasher.0.finish()
+    let mut hasher = DefaultHasher::new();
+    match paint {
+        ScreenshotPaint::Annotation(annotation) => {
+            hasher.write_u8(0);
+            hash_annotation(annotation, &mut hasher);
+        }
+        ScreenshotPaint::BlackoutOverlay(annotation) => {
+            hasher.write_u8(1);
+            hash_annotation(annotation, &mut hasher);
+        }
+    }
+    hasher.finish()
 }
 
-fn fingerprint(keys: &FrameKeys, index: usize, surface: &Surface, scale: f64) -> Option<u64> {
+fn hash_annotation(annotation: &Annotation, hasher: &mut DefaultHasher) {
+    match annotation {
+        Annotation::Pen {
+            id,
+            points,
+            stroke,
+            stroke_width,
+        } => {
+            hasher.write_u8(1);
+            id.hash(hasher);
+            hasher.write_usize(points.len());
+            for value in points {
+                hasher.write_u64(value.to_bits());
+            }
+            stroke.hash(hasher);
+            hasher.write_u64(stroke_width.to_bits());
+        }
+        Annotation::Highlight {
+            id,
+            points,
+            fill,
+            opacity,
+            stroke_width,
+        } => {
+            hasher.write_u8(2);
+            id.hash(hasher);
+            hasher.write_usize(points.len());
+            for value in points {
+                hasher.write_u64(value.to_bits());
+            }
+            fill.hash(hasher);
+            hasher.write_u64(opacity.to_bits());
+            hasher.write_u64(stroke_width.to_bits());
+        }
+        Annotation::Rectangle {
+            id,
+            x,
+            y,
+            width,
+            height,
+            stroke,
+            stroke_width,
+            fill,
+        } => {
+            hasher.write_u8(3);
+            id.hash(hasher);
+            hasher.write_u64(x.to_bits());
+            hasher.write_u64(y.to_bits());
+            hasher.write_u64(width.to_bits());
+            hasher.write_u64(height.to_bits());
+            stroke.hash(hasher);
+            hasher.write_u64(stroke_width.to_bits());
+            fill.hash(hasher);
+        }
+        Annotation::Circle {
+            id,
+            x,
+            y,
+            radius,
+            stroke,
+            stroke_width,
+            fill,
+        } => {
+            hasher.write_u8(4);
+            id.hash(hasher);
+            hasher.write_u64(x.to_bits());
+            hasher.write_u64(y.to_bits());
+            hasher.write_u64(radius.to_bits());
+            stroke.hash(hasher);
+            hasher.write_u64(stroke_width.to_bits());
+            fill.hash(hasher);
+        }
+        Annotation::Line {
+            id,
+            points,
+            stroke,
+            stroke_width,
+        } => {
+            hasher.write_u8(5);
+            id.hash(hasher);
+            for value in points {
+                hasher.write_u64(value.to_bits());
+            }
+            stroke.hash(hasher);
+            hasher.write_u64(stroke_width.to_bits());
+        }
+        Annotation::Arrow {
+            id,
+            points,
+            stroke,
+            stroke_width,
+            arrow_style,
+            bend_offset,
+        } => {
+            hasher.write_u8(6);
+            id.hash(hasher);
+            for value in points {
+                hasher.write_u64(value.to_bits());
+            }
+            stroke.hash(hasher);
+            hasher.write_u64(stroke_width.to_bits());
+            arrow_style.hash(hasher);
+            match bend_offset {
+                Some(offset) => {
+                    hasher.write_u8(1);
+                    hasher.write_u64(offset.x.to_bits());
+                    hasher.write_u64(offset.y.to_bits());
+                }
+                None => hasher.write_u8(0),
+            }
+        }
+        Annotation::Text {
+            id,
+            x,
+            y,
+            text,
+            font_size,
+            fill,
+            font_family,
+            background_color,
+            background_opacity,
+            background_padding,
+            background_radius,
+            rotation,
+        } => {
+            hasher.write_u8(7);
+            id.hash(hasher);
+            hasher.write_u64(x.to_bits());
+            hasher.write_u64(y.to_bits());
+            text.hash(hasher);
+            hasher.write_u64(font_size.to_bits());
+            fill.hash(hasher);
+            font_family.hash(hasher);
+            background_color.hash(hasher);
+            background_opacity.map(f64::to_bits).hash(hasher);
+            match background_padding {
+                Some(offset) => {
+                    hasher.write_u8(1);
+                    hasher.write_u64(offset.x.to_bits());
+                    hasher.write_u64(offset.y.to_bits());
+                }
+                None => hasher.write_u8(0),
+            }
+            background_radius.map(f64::to_bits).hash(hasher);
+            rotation.map(f64::to_bits).hash(hasher);
+        }
+        Annotation::Number {
+            id,
+            x,
+            y,
+            value,
+            display_value,
+            fill,
+            size,
+        } => {
+            hasher.write_u8(8);
+            id.hash(hasher);
+            hasher.write_u64(x.to_bits());
+            hasher.write_u64(y.to_bits());
+            hasher.write_u64(value.to_bits());
+            display_value.hash(hasher);
+            fill.hash(hasher);
+            size.hash(hasher);
+        }
+        Annotation::Redact {
+            id,
+            x,
+            y,
+            width,
+            height,
+            style,
+            intensity,
+        } => {
+            hasher.write_u8(9);
+            id.hash(hasher);
+            hasher.write_u64(x.to_bits());
+            hasher.write_u64(y.to_bits());
+            hasher.write_u64(width.to_bits());
+            hasher.write_u64(height.to_bits());
+            style.hash(hasher);
+            hasher.write_u64(intensity.to_bits());
+        }
+    }
+}
+
+#[cfg(test)]
+fn dependency_hash(
+    keys: &FrameKeys,
+    paint: ScreenshotPaint<'_>,
+    beneath: &[ScreenshotPaint<'_>],
+    surface: &Surface,
+    scale: f64,
+    padding: f64,
+) -> Option<u64> {
+    if surface.pixels.is_none() || beneath.is_empty() {
+        return Some(0);
+    }
+    let sample = patch_bounds(paint, beneath, surface, scale, padding)
+        .and_then(|bounds| clipped_patch_bounds(surface, bounds))
+        .map(|bounds| bounds.sample);
+    let mut running = 0u64;
+    for (earlier_index, earlier) in beneath.iter().enumerate() {
+        if let Some(sample) = sample {
+            if let Some(other) = raster_bounds(earlier.annotation(), surface, scale) {
+                if !bounds_overlap(other, sample) {
+                    continue;
+                }
+            }
+        }
+        running = running.rotate_left(7) ^ *keys.hashes.get(earlier_index)?;
+    }
+    Some(running)
+}
+
+#[cfg(test)]
+fn fingerprint(
+    keys: &FrameKeys,
+    index: usize,
+    paint: ScreenshotPaint<'_>,
+    beneath: &[ScreenshotPaint<'_>],
+    surface: &Surface,
+    scale: f64,
+    padding: f64,
+) -> Option<u64> {
     let mut hasher = DefaultHasher::new();
     hasher.write_u64(*keys.hashes.get(index)?);
-    hasher.write_u64(*keys.prefixes.get(index)?);
+    hasher.write_u64(dependency_hash(
+        keys, paint, beneath, surface, scale, padding,
+    )?);
     hasher.write_u64(scale.to_bits());
     hasher.write_u32(surface.width);
     hasher.write_u32(surface.height);
@@ -1334,9 +2898,31 @@ fn fingerprint(keys: &FrameKeys, index: usize, surface: &Surface, scale: f64) ->
 }
 
 fn render_image(pixmap: &Pixmap) -> Arc<RenderImage> {
-    let mut buffer = crate::editor::export::to_rgba(pixmap);
-    for pixel in buffer.as_chunks_mut::<4>().0 {
-        pixel.swap(0, 2);
+    let mut buffer = image::RgbaImage::new(pixmap.width(), pixmap.height());
+    for (pixel, output) in pixmap
+        .data()
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(buffer.as_chunks_mut::<4>().0.iter_mut())
+    {
+        let alpha = pixel[3];
+        *output = if alpha == 0 {
+            [0, 0, 0, 0]
+        } else if alpha == 255 {
+            [pixel[2], pixel[1], pixel[0], 255]
+        } else {
+            let alpha_u32 = alpha as u32;
+            let half = alpha_u32 / 2;
+            let unpremultiply =
+                |value: u8| -> u8 { ((value as u32 * 255 + half) / alpha_u32).min(255) as u8 };
+            [
+                unpremultiply(pixel[2]),
+                unpremultiply(pixel[1]),
+                unpremultiply(pixel[0]),
+                alpha,
+            ]
+        };
     }
     Arc::new(RenderImage::new(smallvec::smallvec![image::Frame::new(
         buffer
@@ -1783,10 +3369,20 @@ mod tests {
             quality: FilterQuality::Nearest,
         };
         let refs: Vec<&Annotation> = annotations.iter().collect();
+        let all_paints = paints(&refs);
         let keys = begin_frame(&refs);
         for (index, annotation) in annotations.iter().enumerate() {
             assert!(is_rasterized(annotation));
-            assert!(fingerprint(&keys, index, &surface, scale).is_some());
+            assert!(fingerprint(
+                &keys,
+                index,
+                all_paints[index],
+                &all_paints[..index],
+                &surface,
+                scale,
+                0.,
+            )
+            .is_some());
             let patch = patch(annotation, &refs[..index], &surface, scale).expect("patch");
             composed.draw_pixmap(
                 (patch.x * scale).round() as i32,
@@ -3543,5 +5139,448 @@ mod tests {
         };
         let image = patch(&current, &[&preceding], &surface, 1.).unwrap().pixmap;
         assert_eq!((image.width(), image.height()), (10, 10));
+    }
+
+    #[test]
+    fn moving_disjoint_earlier_annotation_preserves_later_cache_entries() {
+        let base = base_pixmap(320, 200);
+        let source = render_image(&base);
+        let surface = Surface {
+            image_id: Some(source.id),
+            width: 320,
+            height: 200,
+            offset_x: 0.,
+            offset_y: 0.,
+            source_is_composed: true,
+            align_to_composition_grid: false,
+            native_scale: 1.,
+            rounded_clip: None,
+            pixels: source.as_bytes(0),
+            matte: None,
+            matte_image: None,
+            composite_backdrop: false,
+        };
+        let grid = SamplingGrid {
+            origin: (0., 0.),
+            stage_bounds: (0., 0., 480., 300.),
+            viewport: None,
+            stage_size: (320., 200.),
+            offset: (0., 0.),
+            zoom: 1.5,
+            dpi: 1.,
+        };
+        let mut first = Annotation::Rectangle {
+            id: "first".into(),
+            x: 10.,
+            y: 10.,
+            width: 40.,
+            height: 40.,
+            stroke: "#ff0000".into(),
+            stroke_width: 2.,
+            fill: Some("#ff0000".into()),
+        };
+        let second = Annotation::Rectangle {
+            id: "second".into(),
+            x: 200.,
+            y: 110.,
+            width: 60.,
+            height: 50.,
+            stroke: "#00ff00".into(),
+            stroke_width: 2.,
+            fill: None,
+        };
+        let keys = begin_frame(&[&first, &second]);
+        let direct_before = image(&keys, 1, &second, &[&first], &surface, 1.).unwrap();
+        let aligned_before = aligned_image(&keys, 1, &second, &[&first], &surface, grid).unwrap();
+
+        first.translate(30., 20.);
+        let keys = begin_frame(&[&first, &second]);
+        let direct_after = image(&keys, 1, &second, &[&first], &surface, 1.).unwrap();
+        let aligned_after = aligned_image(&keys, 1, &second, &[&first], &surface, grid).unwrap();
+        assert!(Arc::ptr_eq(&direct_before.image, &direct_after.image));
+        assert!(Arc::ptr_eq(&aligned_before.image, &aligned_after.image));
+
+        first.translate(170., 90.);
+        let keys = begin_frame(&[&first, &second]);
+        let direct_overlapped = image(&keys, 1, &second, &[&first], &surface, 1.).unwrap();
+        let aligned_overlapped =
+            aligned_image(&keys, 1, &second, &[&first], &surface, grid).unwrap();
+        assert!(!Arc::ptr_eq(&direct_before.image, &direct_overlapped.image));
+        assert!(!Arc::ptr_eq(
+            &aligned_before.image,
+            &aligned_overlapped.image
+        ));
+    }
+
+    #[test]
+    fn sprite_cache_reuses_same_texture_across_translations() {
+        let mut shapes = vec![
+            pen(5.0),
+            highlight(),
+            number(),
+            Annotation::Rectangle {
+                id: "rect".into(),
+                x: 20.,
+                y: 30.,
+                width: 60.,
+                height: 40.,
+                stroke: "#ff3b30".into(),
+                stroke_width: 3.,
+                fill: None,
+            },
+            Annotation::Circle {
+                id: "circle".into(),
+                x: 50.,
+                y: 50.,
+                radius: 24.,
+                stroke: "#34c759".into(),
+                stroke_width: 3.,
+                fill: None,
+            },
+            Annotation::Line {
+                id: "line".into(),
+                points: [10., 15., 90., 45.],
+                stroke: "#0a84ff".into(),
+                stroke_width: 4.,
+            },
+            Annotation::Arrow {
+                id: "arrow".into(),
+                points: [10., 15., 90., 65.],
+                stroke: "#ff9f0a".into(),
+                stroke_width: 4.,
+                arrow_style: Some("curved".into()),
+                bend_offset: Some(crate::editor::annotations::Offset { x: 8., y: -6. }),
+            },
+        ];
+        if crate::editor::text_render::is_available() {
+            shapes.push(text(Some(15.0)));
+        }
+
+        for shape in &mut shapes {
+            let before = sprite_image(shape, 1.5).expect("sprite before move");
+            shape.translate(42.375, -17.625);
+            let after = sprite_image(shape, 1.5).expect("sprite after move");
+            assert!(
+                Arc::ptr_eq(&before.image, &after.image),
+                "expected sprite cache hit for {}",
+                shape.kind()
+            );
+            assert!((after.x - before.x - 42.375).abs() < 1e-6);
+            assert!((after.y - before.y + 17.625).abs() < 1e-6);
+        }
+
+        for freehand in [&mut pen(5.0), &mut highlight()] {
+            let before = halo_sprite_image(freehand, 1.5, 2.0, [10, 132, 255, 204]).unwrap();
+            freehand.translate(18.25, 27.75);
+            let after = halo_sprite_image(freehand, 1.5, 2.0, [10, 132, 255, 204]).unwrap();
+            assert!(Arc::ptr_eq(&before.image, &after.image));
+            assert!((after.x - before.x - 18.25).abs() < 1e-6);
+            assert!((after.y - before.y - 27.75).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn interactive_redact_caps_large_blur_and_tracks_position() {
+        let base = base_pixmap(640, 480);
+        let source = render_image(&base);
+        let surface = Surface {
+            image_id: Some(source.id),
+            width: 640,
+            height: 480,
+            offset_x: 0.,
+            offset_y: 0.,
+            source_is_composed: true,
+            align_to_composition_grid: false,
+            native_scale: 1.,
+            rounded_clip: None,
+            pixels: source.as_bytes(0),
+            matte: None,
+            matte_image: None,
+            composite_backdrop: false,
+        };
+        let mut blur = Annotation::Redact {
+            id: "blur-drag".into(),
+            x: 20.,
+            y: 20.,
+            width: 500.,
+            height: 400.,
+            style: "blur".into(),
+            intensity: 5.,
+        };
+        let keys = begin_frame(&[&blur]);
+        let first = interactive_redact_image(
+            &keys,
+            0,
+            ScreenshotPaint::Annotation(&blur),
+            &[],
+            &surface,
+            2.0,
+        )
+        .unwrap();
+        let size = first.image.size(0);
+        assert!(
+            f64::from(u32::from(size.width)) * f64::from(u32::from(size.height))
+                <= MAX_INTERACTIVE_BLUR_PIXELS * 1.25
+        );
+        blur.translate(40., 25.);
+        let keys = begin_frame(&[&blur]);
+        let moved = interactive_redact_image(
+            &keys,
+            0,
+            ScreenshotPaint::Annotation(&blur),
+            &[],
+            &surface,
+            2.0,
+        )
+        .unwrap();
+        assert!(!Arc::ptr_eq(&first.image, &moved.image));
+        assert!((moved.x - first.x - 40.).abs() <= 2.);
+        assert!((moved.y - first.y - 25.).abs() <= 2.);
+    }
+
+    #[test]
+    fn composite_layer_appends_incrementally_and_matches_export() {
+        let base = base_pixmap(240, 180);
+        let source = render_image(&base);
+        let surface = Surface {
+            image_id: Some(source.id),
+            width: 240,
+            height: 180,
+            offset_x: 0.,
+            offset_y: 0.,
+            source_is_composed: true,
+            align_to_composition_grid: false,
+            native_scale: 1.,
+            rounded_clip: None,
+            pixels: source.as_bytes(0),
+            matte: None,
+            matte_image: None,
+            composite_backdrop: false,
+        };
+        let clip = (0., 0., 240., 180.);
+        let first = pen(4.0);
+        let second = number();
+        let third = Annotation::Redact {
+            id: "pix".into(),
+            x: 16.,
+            y: 18.,
+            width: 60.,
+            height: 44.,
+            style: "pixelate".into(),
+            intensity: 3.,
+        };
+        let mut fourth = Annotation::Rectangle {
+            id: "grown".into(),
+            x: 150.,
+            y: 110.,
+            width: 60.,
+            height: 50.,
+            stroke: "#0a84ff".into(),
+            stroke_width: 3.,
+            fill: None,
+        };
+
+        let _ = super::begin_frame(&[]);
+        let p1 = renderer::screenshot_paints([&first].into_iter());
+        let layer1 = composite_layer(
+            Some(source.id),
+            LayerSlot::Committed,
+            &p1,
+            &surface,
+            clip,
+            false,
+        )
+        .unwrap();
+        let layer1_hit = composite_layer(
+            Some(source.id),
+            LayerSlot::Committed,
+            &p1,
+            &surface,
+            clip,
+            false,
+        )
+        .unwrap();
+        assert!(Arc::ptr_eq(&layer1.image, &layer1_hit.image));
+
+        let p2 = renderer::screenshot_paints([&first, &second, &third].into_iter());
+        let layer2 = composite_layer(
+            Some(source.id),
+            LayerSlot::Committed,
+            &p2,
+            &surface,
+            clip,
+            false,
+        )
+        .unwrap();
+        assert!(!Arc::ptr_eq(&layer1.image, &layer2.image));
+
+        let p3 = renderer::screenshot_paints([&first, &second, &third, &fourth].into_iter());
+        let layer3 = composite_layer(
+            Some(source.id),
+            LayerSlot::Committed,
+            &p3,
+            &surface,
+            clip,
+            false,
+        )
+        .unwrap();
+        assert!(layer3.width > layer2.width || layer3.height > layer2.height);
+
+        let mut expected = Canvas::from_pixmap(base.clone());
+        renderer::draw_all_screenshot(
+            &mut expected,
+            &[first.clone(), second.clone(), third.clone(), fourth.clone()],
+            1.0,
+        );
+        let expected_rgba = crate::editor::export::to_rgba(expected.pixmap());
+        let mut actual = Canvas::from_pixmap(base);
+        let layer_bgra = layer3.image.as_bytes(0).unwrap();
+        let size = layer3.image.size(0);
+        let mut layer_rgba = image::RgbaImage::new(u32::from(size.width), u32::from(size.height));
+        for (src, dst) in layer_bgra
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(layer_rgba.as_chunks_mut::<4>().0.iter_mut())
+        {
+            *dst = [src[2], src[1], src[0], src[3]];
+        }
+        let layer_pixmap = crate::editor::export::from_rgba(&layer_rgba).unwrap();
+        actual.draw_pixmap(
+            layer_pixmap.as_ref(),
+            layer3.x as f32,
+            layer3.y as f32,
+            layer3.width as f32,
+            layer3.height as f32,
+        );
+        let actual_rgba = crate::editor::export::to_rgba(actual.pixmap());
+        for (index, (a, e)) in actual_rgba
+            .as_raw()
+            .iter()
+            .zip(expected_rgba.as_raw())
+            .enumerate()
+        {
+            assert!(
+                a.abs_diff(*e) <= 2,
+                "composite incremental append mismatch at channel {index}: {a} vs {e}"
+            );
+        }
+
+        fourth.translate(-5., -5.);
+        let _ = fourth;
+    }
+
+    #[test]
+    fn composite_layer_skips_rebuild_when_wallpaper_changes_for_strokes() {
+        let first_bg = render_image(&base_pixmap(240, 180));
+        let mut second_pix = base_pixmap(240, 180);
+        second_pix.fill(tiny_skia::Color::from_rgba8(10, 20, 30, 255));
+        let second_bg = render_image(&second_pix);
+        let stroke = pen(4.0);
+        let paints = renderer::screenshot_paints([&stroke].into_iter());
+        let surface_a = Surface {
+            image_id: Some(first_bg.id),
+            width: 240,
+            height: 180,
+            offset_x: 0.,
+            offset_y: 0.,
+            source_is_composed: true,
+            align_to_composition_grid: false,
+            native_scale: 1.,
+            rounded_clip: None,
+            pixels: first_bg.as_bytes(0),
+            matte: None,
+            matte_image: None,
+            composite_backdrop: false,
+        };
+        let surface_b = Surface {
+            image_id: Some(second_bg.id),
+            pixels: second_bg.as_bytes(0),
+            ..surface_a
+        };
+        let clip = (0., 0., 240., 180.);
+        let _ = super::begin_frame(&[]);
+        let a = composite_layer(
+            Some(first_bg.id),
+            LayerSlot::Committed,
+            &paints,
+            &surface_a,
+            clip,
+            false,
+        )
+        .unwrap();
+        let b = composite_layer(
+            Some(first_bg.id),
+            LayerSlot::Committed,
+            &paints,
+            &surface_b,
+            clip,
+            false,
+        )
+        .unwrap();
+        assert!(Arc::ptr_eq(&a.image, &b.image));
+    }
+
+    #[test]
+    fn effect_over_layer_samples_flattened_below_strokes() {
+        let base = base_pixmap(200, 160);
+        let source = render_image(&base);
+        let surface = Surface {
+            image_id: Some(source.id),
+            width: 200,
+            height: 160,
+            offset_x: 0.,
+            offset_y: 0.,
+            source_is_composed: true,
+            align_to_composition_grid: false,
+            native_scale: 1.,
+            rounded_clip: None,
+            pixels: source.as_bytes(0),
+            matte: None,
+            matte_image: None,
+            composite_backdrop: false,
+        };
+        let stroke = Annotation::Rectangle {
+            id: "bright".into(),
+            x: 20.,
+            y: 20.,
+            width: 100.,
+            height: 80.,
+            stroke: "#ff0000".into(),
+            stroke_width: 4.,
+            fill: Some("#ff0000".into()),
+        };
+        let redact = Annotation::Redact {
+            id: "pixelate-over".into(),
+            x: 30.,
+            y: 30.,
+            width: 50.,
+            height: 40.,
+            style: "pixelate".into(),
+            intensity: 4.,
+        };
+        let _ = super::begin_frame(&[]);
+        let below = renderer::screenshot_paints([&stroke].into_iter());
+        let _ = composite_layer(
+            Some(source.id),
+            LayerSlot::Below,
+            &below,
+            &surface,
+            (0., 0., 200., 160.),
+            false,
+        )
+        .unwrap();
+        let over_below = effect_over_layer(
+            Some(source.id),
+            Some(LayerSlot::Below),
+            ScreenshotPaint::Annotation(&redact),
+            &surface,
+            1.0,
+            true,
+        )
+        .unwrap();
+        let pixels = over_below.image.as_bytes(0).unwrap().as_chunks::<4>().0;
+        let center = pixels[pixels.len() / 2];
+        assert!(center[2] > 200 && center[1] < 20 && center[0] < 20);
     }
 }
