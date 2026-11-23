@@ -611,6 +611,16 @@ public static class PoratakeTooltipProbe {
         }
     }
 
+    public static bool WindowHasCustomRegion(IntPtr hwnd) {
+        var region = CreateRectRgn(0, 0, 0, 0);
+        if (region == IntPtr.Zero) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "Could not create the native window-region probe.");
+        try {
+            return GetWindowRgn(hwnd, region) != 0;
+        } finally {
+            if (!DeleteObject(region)) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "Could not release the native window-region probe.");
+        }
+    }
+
     public static List<IntPtr> WindowsWithText(string expectedText) {
         var result = new List<IntPtr>();
         EnumWindows((hwnd, _) => {
@@ -4018,13 +4028,15 @@ try {
     Wait-Until { -not [PoratakeTooltipProbe]::IsWindowVisible($handoffControl) } 15000 'The area recording control did not close after stopping.' | Out-Null
     $parkedRegionReady = Wait-Until {
         try {
-            $inside = [PoratakeTooltipProbe]::WindowRegionContainsScreenPoint($handoffOverlay, $handoffInsidePoint.X, $handoffInsidePoint.Y)
-            $outside = [PoratakeTooltipProbe]::WindowRegionContainsScreenPoint($handoffOverlay, $handoffOutsidePoint.X, $handoffOutsidePoint.Y)
-            if ($inside -and $outside -and -not [PoratakeTooltipProbe]::IsWindowVisible($handoffOverlay)) { return $true }
+            if ([PoratakeTooltipProbe]::IsWindowVisible($handoffOverlay)) { return $null }
+            if ([PoratakeTooltipProbe]::WindowHasCustomRegion($handoffOverlay)) { return $null }
+            $rect = New-Object PoratakeTooltipProbe+Rect
+            if (-not [PoratakeTooltipProbe]::GetWindowRect($handoffOverlay, [ref]$rect)) { return $null }
+            if (($rect.Right - $rect.Left) -eq 1 -and ($rect.Bottom - $rect.Top) -eq 1) { return $true }
         } catch { }
         return $null
     } 15000 'Stopping the recording did not restore and park the pooled selector region.'
-    if (-not $parkedRegionReady) { throw 'The parked selector did not restore the full window region.' }
+    if (-not $parkedRegionReady) { throw 'The parked selector did not clear its window region and shrink to 1x1.' }
     [PoratakeTooltipProbe]::PressRecordingAreaHotkey()
     $reopenedHandoffOverlay = Wait-Until {
         if (-not [PoratakeTooltipProbe]::IsWindowVisible($handoffOverlay)) { return $null }
@@ -4045,10 +4057,15 @@ try {
     Wait-Until { -not [PoratakeTooltipProbe]::IsWindowVisible($handoffOverlay) } 10000 'Escape did not cancel the reopened record-area selector.' | Out-Null
     $cancelledRegionReady = Wait-Until {
         try {
-            return [PoratakeTooltipProbe]::WindowRegionContainsScreenPoint($handoffOverlay, $handoffInsidePoint.X, $handoffInsidePoint.Y) -and [PoratakeTooltipProbe]::WindowRegionContainsScreenPoint($handoffOverlay, $handoffOutsidePoint.X, $handoffOutsidePoint.Y)
+            if ([PoratakeTooltipProbe]::IsWindowVisible($handoffOverlay)) { return $null }
+            if ([PoratakeTooltipProbe]::WindowHasCustomRegion($handoffOverlay)) { return $null }
+            $rect = New-Object PoratakeTooltipProbe+Rect
+            if (-not [PoratakeTooltipProbe]::GetWindowRect($handoffOverlay, [ref]$rect)) { return $null }
+            if (($rect.Right - $rect.Left) -eq 1 -and ($rect.Bottom - $rect.Top) -eq 1) { return $true }
         } catch { return $null }
-    } 5000 'Cancelling the reopened selector changed its restored full region.'
-    if (-not $cancelledRegionReady) { throw 'The cancelled selector did not retain its full native window region.' }
+        return $null
+    } 5000 'Cancelling the reopened selector did not clear its window region and park to 1x1.'
+    if (-not $cancelledRegionReady) { throw 'The cancelled selector did not clear its window region and shrink to 1x1.' }
     Write-Host 'Record-area native handoff, park, pooled-window reuse and Escape cancellation passed.'
     Capture-OwnedDaemonChildren $handoffApplication
     $handoffProcessId = $handoffApplication.Id
