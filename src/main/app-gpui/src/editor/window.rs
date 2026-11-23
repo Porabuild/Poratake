@@ -5059,10 +5059,6 @@ impl EditorWindow {
     }
 
     pub fn save_as(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        eprintln!(
-            "[diag-save] save_as entered save_dialog_open={}",
-            self.save_dialog_open
-        );
         self.commit_text(cx);
         if self.save_dialog_open {
             return;
