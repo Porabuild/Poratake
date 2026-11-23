@@ -510,6 +510,17 @@ public static class PoratakeTooltipProbe {
     [DllImport("kernel32.dll")] public static extern void SetLastError(uint error);
     [DllImport("user32.dll")] public static extern IntPtr MonitorFromWindow(IntPtr hwnd, uint flags);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern bool GetMonitorInfo(IntPtr monitor, ref MonitorInfo info);
+    [DllImport("kernel32.dll", SetLastError = true)] public static extern IntPtr OpenThread(uint access, bool inheritHandle, uint threadId);
+    [DllImport("kernel32.dll", SetLastError = true)] public static extern uint SuspendThread(IntPtr thread);
+    [DllImport("kernel32.dll", SetLastError = true)] public static extern uint ResumeThread(IntPtr thread);
+    [DllImport("kernel32.dll", SetLastError = true)] public static extern bool GetThreadContext(IntPtr thread, IntPtr context);
+    [DllImport("user32.dll")] public static extern bool IsHungAppWindow(IntPtr hwnd);
+    [DllImport("ntdll.dll", ExactSpelling = true)] public static extern int NtQueryInformationThread(IntPtr thread, int informationClass, IntPtr information, int length, out int returnLength);
+    [DllImport("dbghelp.dll", ExactSpelling = true, SetLastError = true, CharSet = CharSet.Unicode)] public static extern bool SymInitializeW(IntPtr process, string searchPath, bool invadeProcess);
+    [DllImport("dbghelp.dll", ExactSpelling = true, SetLastError = true)] public static extern uint SymSetOptions(uint options);
+    [DllImport("dbghelp.dll", ExactSpelling = true, SetLastError = true)] public static extern uint SymGetOptions();
+    [DllImport("dbghelp.dll", ExactSpelling = true, SetLastError = true, CharSet = CharSet.Unicode)] public static extern bool SymFromAddrW(IntPtr process, ulong address, out ulong displacement, IntPtr symbol);
+    [DllImport("dbghelp.dll", ExactSpelling = true, SetLastError = true)] public static extern bool SymCleanup(IntPtr process);
 
     public static uint MonitorInfoSize() { return (uint)Marshal.SizeOf(typeof(MonitorInfo)); }
 
@@ -715,6 +726,120 @@ public static class PoratakeTooltipProbe {
         }
     }
 
+    static int StackModuleIndex(ulong address, ulong[] moduleBases, ulong[] moduleSizes) {
+        for (var index = 0; index < moduleBases.Length; index++) {
+            if (moduleBases[index] != 0 && address >= moduleBases[index] && address < moduleBases[index] + moduleSizes[index]) return index;
+        }
+        return -1;
+    }
+
+    static string StackSymbol(IntPtr process, ulong address, IntPtr symbol) {
+        for (var offset = 0; offset < 84; offset += 4) Marshal.WriteInt32(symbol, offset, 0);
+        Marshal.WriteInt32(symbol, 0, 84);
+        Marshal.WriteInt32(symbol, 80, 2048);
+        ulong displacement;
+        if (!SymFromAddrW(process, address, out displacement, symbol)) return null;
+        var nameLength = Marshal.ReadInt32(symbol, 76);
+        if (nameLength <= 0 || nameLength > 2048) return null;
+        var name = Marshal.PtrToStringUni(new IntPtr(symbol.ToInt64() + 84), nameLength);
+        if (String.IsNullOrEmpty(name)) return null;
+        return displacement == 0 ? name : name + "+0x" + displacement.ToString("x");
+    }
+
+    static string StackDescribeAddress(IntPtr process, bool symbolsReady, IntPtr symbol, ulong address, string[] moduleNames, ulong[] moduleBases, ulong[] moduleSizes) {
+        var text = "0x" + address.ToString("x");
+        var module = StackModuleIndex(address, moduleBases, moduleSizes);
+        if (module >= 0 && module < moduleNames.Length) text += " " + moduleNames[module] + "+0x" + (address - moduleBases[module]).ToString("x");
+        if (symbolsReady) {
+            var name = StackSymbol(process, address, symbol);
+            if (name != null) text += " " + name;
+        }
+        return text;
+    }
+
+    public static List<string> DescribeThreadStacks(uint processId, int[] threadIds, string[] moduleNames, ulong[] moduleBases, ulong[] moduleSizes, string symbolSearchPath, int maxLines) {
+        var lines = new List<string>();
+        var process = OpenProcess(0x0410, false, processId);
+        if (process == IntPtr.Zero) {
+            lines.Add("stack: OpenProcess failed with " + Marshal.GetLastWin32Error());
+            return lines;
+        }
+        var context = Marshal.AllocHGlobal(1248);
+        var aligned = new IntPtr((context.ToInt64() + 15) & ~15L);
+        var basic = Marshal.AllocHGlobal(48);
+        var pointer = Marshal.AllocHGlobal(8);
+        var symbol = Marshal.AllocHGlobal(84 + 4096);
+        var chunk = new byte[8192];
+        var pin = GCHandle.Alloc(chunk, GCHandleType.Pinned);
+        var chunkPointer = pin.AddrOfPinnedObject();
+        var symbolsReady = false;
+        try {
+            SymSetOptions(SymGetOptions() | 0x00000002u | 0x00000004u);
+            symbolsReady = SymInitializeW(process, symbolSearchPath, true);
+            lines.Add("stack: symbols " + (symbolsReady ? "ready" : "unavailable, error " + Marshal.GetLastWin32Error()));
+            foreach (var threadId in threadIds) {
+                if (lines.Count >= maxLines) break;
+                var thread = OpenThread(0x004A, false, (uint)threadId);
+                if (thread == IntPtr.Zero) {
+                    lines.Add("stack: thread " + threadId + " OpenThread failed with " + Marshal.GetLastWin32Error());
+                    continue;
+                }
+                try {
+                    if (SuspendThread(thread) == 0xFFFFFFFF) {
+                        lines.Add("stack: thread " + threadId + " SuspendThread failed with " + Marshal.GetLastWin32Error());
+                        continue;
+                    }
+                    try {
+                        for (var offset = 0; offset < 1232; offset += 8) Marshal.WriteInt64(aligned, offset, 0);
+                        Marshal.WriteInt32(aligned, 0x30, 0x00100003);
+                        if (!GetThreadContext(thread, aligned)) {
+                            lines.Add("stack: thread " + threadId + " GetThreadContext failed with " + Marshal.GetLastWin32Error());
+                            continue;
+                        }
+                        var stackPointer = (ulong)Marshal.ReadInt64(aligned, 0x98);
+                        var instruction = (ulong)Marshal.ReadInt64(aligned, 0xF8);
+                        var stackBase = 0UL;
+                        int returned;
+                        UIntPtr transferred;
+                        if (NtQueryInformationThread(thread, 0, basic, 48, out returned) == 0) {
+                            var teb = Marshal.ReadIntPtr(basic, 8);
+                            if (teb != IntPtr.Zero && ReadProcessMemory(process, new IntPtr(teb.ToInt64() + 8), pointer, new UIntPtr(8), out transferred) && transferred.ToUInt64() == 8) {
+                                stackBase = (ulong)Marshal.ReadInt64(pointer);
+                            }
+                        }
+                        var remaining = stackBase > stackPointer ? stackBase - stackPointer : 0UL;
+                        if (remaining > 49152UL) remaining = 49152UL;
+                        lines.Add("stack: thread " + threadId + " instruction " + StackDescribeAddress(process, symbolsReady, symbol, instruction, moduleNames, moduleBases, moduleSizes) + " stack 0x" + stackPointer.ToString("x") + "-0x" + stackBase.ToString("x"));
+                        for (var offset = 0UL; offset < remaining && lines.Count < maxLines; offset += 8192UL) {
+                            var requested = remaining - offset;
+                            if (requested > 8192UL) requested = 8192UL;
+                            if (!ReadProcessMemory(process, new IntPtr((long)(stackPointer + offset)), chunkPointer, new UIntPtr(requested), out transferred)) break;
+                            var count = (int)(transferred.ToUInt64() & ~7UL);
+                            for (var index = 0; index + 8 <= count; index += 8) {
+                                var value = (ulong)BitConverter.ToInt64(chunk, index);
+                                if (StackModuleIndex(value, moduleBases, moduleSizes) < 0) continue;
+                                lines.Add("stack: thread " + threadId + " rsp+0x" + (offset + (ulong)index).ToString("x") + " " + StackDescribeAddress(process, symbolsReady, symbol, value, moduleNames, moduleBases, moduleSizes));
+                            }
+                        }
+                    } finally {
+                        ResumeThread(thread);
+                    }
+                } finally {
+                    CloseHandle(thread);
+                }
+            }
+        } finally {
+            if (symbolsReady) SymCleanup(process);
+            pin.Free();
+            Marshal.FreeHGlobal(symbol);
+            Marshal.FreeHGlobal(pointer);
+            Marshal.FreeHGlobal(basic);
+            Marshal.FreeHGlobal(context);
+            CloseHandle(process);
+        }
+        return lines;
+    }
+
 }
 '@
 
@@ -780,6 +905,45 @@ function Get-WindowIdentity([IntPtr]$handle) {
     } catch {
         return @{ hwnd = $handle.ToInt64(); identityError = $_.Exception.Message }
     }
+}
+
+function Save-DialogFailureDiagnostics([System.Diagnostics.Process]$application, [IntPtr]$editorHandle) {
+    $foreground = Get-WindowIdentity ([PoratakeTooltipProbe]::GetForegroundWindow())
+    Write-Host "DIAG foreground: $($foreground | ConvertTo-Json -Compress)"
+    Write-Host "DIAG editor hung: $([PoratakeTooltipProbe]::IsHungAppWindow($editorHandle))"
+    $windows = @([PoratakeTooltipProbe]::Windows([uint32]$application.Id) | ForEach-Object { Get-WindowIdentity $_ })
+    Write-Host "DIAG workflow windows: $($windows | ConvertTo-Json -Compress)"
+    $editorThread = [uint32]0
+    [void][PoratakeTooltipProbe]::GetWindowThreadProcessId($editorHandle, [ref]$editorThread)
+    $dialogThreads = @($windows | Where-Object { $_.className -eq '#32770' } | ForEach-Object { [int]$_.threadId })
+    $application.Refresh()
+    $first = @{}
+    foreach ($thread in $application.Threads) {
+        try { $first[[int]$thread.Id] = $thread.TotalProcessorTime.TotalMilliseconds } catch { }
+    }
+    Start-Sleep -Milliseconds 1000
+    $application.Refresh()
+    $busy = @()
+    foreach ($thread in $application.Threads) {
+        try {
+            $id = [int]$thread.Id
+            $delta = 0.0
+            if ($first.ContainsKey($id)) { $delta = $thread.TotalProcessorTime.TotalMilliseconds - [double]$first[$id] }
+            $reason = ''
+            try { $reason = [string]$thread.WaitReason } catch { }
+            Write-Host ("DIAG thread {0} state={1} wait={2} cpuDeltaMs={3:F0}" -f $id, $thread.ThreadState, $reason, $delta)
+            if ($delta -ge 15.0) { $busy += $id }
+        } catch { }
+    }
+    $targets = @(@([int]$editorThread) + $dialogThreads + $busy | Select-Object -Unique)
+    $modules = @($application.Modules)
+    $moduleNames = [string[]]@($modules | ForEach-Object { $_.ModuleName })
+    $moduleBases = [uint64[]]@($modules | ForEach-Object { [uint64]$_.BaseAddress.ToInt64() })
+    $moduleSizes = [uint64[]]@($modules | ForEach-Object { [uint64]$_.ModuleMemorySize })
+    $executableDirectory = [System.IO.Path]::GetDirectoryName($application.MainModule.FileName)
+    $searchPath = $executableDirectory + ';' + [System.IO.Path]::GetDirectoryName($executableDirectory)
+    $stacks = [PoratakeTooltipProbe]::DescribeThreadStacks([uint32]$application.Id, [int[]]$targets, $moduleNames, $moduleBases, $moduleSizes, $searchPath, 2500)
+    foreach ($line in $stacks) { Write-Host "DIAG $line" }
 }
 
 function Open-EditorOwnedDialog([IntPtr]$editorHandle, $buttonBounds, [string]$title) {
@@ -3351,7 +3515,13 @@ try {
             return $handle
         }
         return $null
-    } 30000 'Ctrl+S did not open the native Save Screenshot dialog.'
+    } 30000 ''
+    if (-not $saveDialog) {
+        try { Save-DialogFailureDiagnostics $workflowApplication $editorHandle } catch { Write-Host "DIAG thread diagnostics failed: $_" }
+        if (Test-Path -LiteralPath $workflowStderrPath) { Write-Host 'DIAG workflow stderr:'; Get-Content -LiteralPath $workflowStderrPath | Write-Host }
+        try { Capture-TooltipArea 'save-dialog-failure-screen' $monitor.Monitor (Join-Path $captureRoot 'save-dialog-failure-screen.png') 10 } catch { Write-Host "DIAG screen capture failed: $_" }
+        throw 'Ctrl+S did not open the native Save Screenshot dialog.'
+    }
     if ([PoratakeTooltipProbe]::GetWindow($saveDialog, 4) -ne $editorHandle) { throw 'The Save Screenshot dialog is not owned by the screenshot editor.' }
     if (-not [PoratakeTooltipProbe]::SetForegroundWindow($saveDialog)) { throw 'Could not foreground the owned Save Screenshot dialog.' }
     Wait-Until {
