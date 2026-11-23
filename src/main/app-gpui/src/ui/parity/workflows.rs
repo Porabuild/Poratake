@@ -9315,13 +9315,14 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
         );
     });
     let cropped = cx.capture_screenshot(window).unwrap();
+    let crop_handle_fill = gpui::Rgba::from(crate::ui::colors::white(1.0));
     for (x, y) in [(-2, -2), (2, -2), (-2, 2), (2, 2)] {
         assert!(
             cropped
                 .get_pixel((left as i32 + x) as u32, (top as i32 + y) as u32)
                 .0[..3]
                 .iter()
-                .zip([foreground.r, foreground.g, foreground.b])
+                .zip([crop_handle_fill.r, crop_handle_fill.g, crop_handle_fill.b])
                 .all(|(actual, expected)| (f32::from(*actual) - expected * 255.).abs() <= 2.),
             "the rounded crop handle must remain visible at {x},{y}"
         );
@@ -9675,13 +9676,14 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
         );
     });
     let cropped = cx.capture_screenshot(window).unwrap();
+    let crop_handle_fill = gpui::Rgba::from(crate::ui::colors::white(1.0));
     for (x, y) in [(-2, -2), (2, -2), (-2, 2), (2, 2)] {
         assert!(
             cropped
                 .get_pixel((left as i32 + x) as u32, (top as i32 + y) as u32)
                 .0[..3]
                 .iter()
-                .zip([foreground.r, foreground.g, foreground.b])
+                .zip([crop_handle_fill.r, crop_handle_fill.g, crop_handle_fill.b])
                 .all(|(actual, expected)| (f32::from(*actual) - expected * 255.).abs() <= 2.),
             "the crop handle must remain visible at {x},{y}"
         );

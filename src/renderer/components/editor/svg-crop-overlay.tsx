@@ -16,6 +16,7 @@ interface SvgCropOverlayProps {
   offsetY?: number;
   imageWidth: number;
   imageHeight: number;
+  zoom?: number;
 }
 
 type ResizeHandle = 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right';
@@ -28,7 +29,12 @@ interface DragState {
   startRect: CropRect;
 }
 
-const HANDLE_SIZE = 12;
+const HANDLE_SIZE = 8;
+const HIT_HANDLE_SIZE = 14;
+const HINT_GAP = 10;
+const HINT_HEIGHT = 28;
+const HINT_EST_WIDTH = 136;
+const HINT_EDGE_PAD = 8;
 const MIN_SIZE = 20;
 
 const SvgCropOverlay = ({
@@ -40,6 +46,7 @@ const SvgCropOverlay = ({
   offsetY = 0,
   imageWidth,
   imageHeight,
+  zoom = 1,
 }: SvgCropOverlayProps) => {
   const svgRef = useRef<SVGSVGElement>(null);
   const [dragState, setDragState] = useState<DragState | null>(null);
@@ -267,11 +274,16 @@ const SvgCropOverlay = ({
     };
   }, [dragState, offsetX, offsetY, imageWidth, imageHeight, onCropRectChange]);
 
+  const invZoom = zoom > 0 ? 1 / zoom : 1;
+  const strokeWidth = invZoom;
+  const handleSize = HANDLE_SIZE * invZoom;
+  const hitHandleSize = HIT_HANDLE_SIZE * invZoom;
+  const handleRadius = 2 * invZoom;
+
   const handleStyle = {
-    fill: 'var(--primary-foreground)',
-    stroke: 'var(--primary)',
-    strokeWidth: 2,
-    cursor: 'default',
+    fill: '#ffffff',
+    stroke: 'rgba(0, 0, 0, 0.45)',
+    strokeWidth,
   };
 
   const handles: { pos: ResizeHandle; x: number; y: number; cursor: string }[] =
@@ -302,92 +314,137 @@ const SvgCropOverlay = ({
       },
     ];
 
-  const textX = normalizedRect.x + normalizedRect.width / 2 + offsetX;
-  const textY = normalizedRect.y + normalizedRect.height + 24 + offsetY;
+  const boxLeft = normalizedRect.x + offsetX;
+  const boxTop = normalizedRect.y + offsetY;
+  const hintGap = HINT_GAP * invZoom;
+  const hintHeight = HINT_HEIGHT * invZoom;
+  const hintHalfW = HINT_EST_WIDTH * 0.5 * invZoom;
+  const hintEdgePad = HINT_EDGE_PAD * invZoom;
+  const rawHintX = boxLeft + normalizedRect.width / 2;
+  const hintX =
+    canvasWidth > (HINT_EST_WIDTH + HINT_EDGE_PAD * 2) * invZoom
+      ? Math.max(
+          hintHalfW + hintEdgePad,
+          Math.min(rawHintX, canvasWidth - hintHalfW - hintEdgePad)
+        )
+      : canvasWidth / 2;
+  const belowY = boxTop + normalizedRect.height + hintGap;
+  let hintY = belowY;
+  if (belowY + hintHeight > canvasHeight) {
+    if (boxTop >= hintGap + hintHeight) {
+      hintY = boxTop - hintGap - hintHeight;
+    } else {
+      hintY = Math.max(
+        boxTop + hintGap,
+        boxTop + normalizedRect.height - hintGap - hintHeight
+      );
+    }
+  }
+  const showHint = normalizedRect.width >= 2 && normalizedRect.height >= 2;
 
   return (
-    <svg
-      ref={svgRef}
-      width={canvasWidth}
-      height={canvasHeight}
+    <div
       style={{
         position: 'absolute',
-        top: 0,
-        left: 0,
-        pointerEvents: dragState ? 'auto' : 'none',
-        overflow: 'visible',
+        inset: 0,
+        pointerEvents: 'none',
+        zIndex: 30,
       }}
-      onMouseMove={handleMouseMove}
-      onMouseUp={handleMouseUp}
     >
-      <defs>
-        <mask id="crop-mask">
-          <rect
-            x={0}
-            y={0}
-            width={canvasWidth}
-            height={canvasHeight}
-            fill="white"
-          />
-          <rect
-            x={normalizedRect.x + offsetX}
-            y={normalizedRect.y + offsetY}
-            width={normalizedRect.width}
-            height={normalizedRect.height}
-            fill="black"
-          />
-        </mask>
-      </defs>
-
-      <rect
-        x={0}
-        y={0}
+      <svg
+        ref={svgRef}
         width={canvasWidth}
         height={canvasHeight}
-        fill="rgba(0, 0, 0, 0.5)"
-        mask="url(#crop-mask)"
-        style={{ pointerEvents: 'none' }}
-      />
-
-      <rect
-        x={normalizedRect.x + offsetX}
-        y={normalizedRect.y + offsetY}
-        width={normalizedRect.width}
-        height={normalizedRect.height}
-        fill="transparent"
-        stroke="var(--primary)"
-        strokeWidth={2}
-        rx={1}
-        style={{ cursor: 'move', pointerEvents: 'auto' }}
-        onMouseDown={handleMoveStart}
-      />
-
-      {handles.map(({ pos, x, y, cursor }) => (
-        <rect
-          key={pos}
-          x={x - HANDLE_SIZE / 2}
-          y={y - HANDLE_SIZE / 2}
-          width={HANDLE_SIZE}
-          height={HANDLE_SIZE}
-          rx={2}
-          {...handleStyle}
-          style={{ cursor, pointerEvents: 'auto' }}
-          onMouseDown={e => handleResizeStart(e, pos)}
-        />
-      ))}
-
-      <text
-        x={textX}
-        y={textY}
-        textAnchor="middle"
-        fill="var(--primary)"
-        fontSize={14}
-        fontFamily="system-ui, -apple-system, sans-serif"
-        style={{ pointerEvents: 'none', userSelect: 'none' }}
+        style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          pointerEvents: dragState ? 'auto' : 'none',
+          overflow: 'visible',
+        }}
+        onMouseMove={handleMouseMove}
+        onMouseUp={handleMouseUp}
       >
-        Press Enter to crop
-      </text>
-    </svg>
+        <defs>
+          <mask id="crop-mask">
+            <rect
+              x={0}
+              y={0}
+              width={canvasWidth}
+              height={canvasHeight}
+              fill="white"
+            />
+            <rect
+              x={boxLeft}
+              y={boxTop}
+              width={normalizedRect.width}
+              height={normalizedRect.height}
+              fill="black"
+            />
+          </mask>
+        </defs>
+
+        <rect
+          x={0}
+          y={0}
+          width={canvasWidth}
+          height={canvasHeight}
+          fill="rgba(0, 0, 0, 0.5)"
+          mask="url(#crop-mask)"
+          style={{ pointerEvents: 'none' }}
+        />
+
+        <rect
+          x={boxLeft}
+          y={boxTop}
+          width={normalizedRect.width}
+          height={normalizedRect.height}
+          fill="transparent"
+          stroke="rgba(255, 255, 255, 0.85)"
+          strokeWidth={strokeWidth}
+          rx={invZoom}
+          style={{ cursor: 'move', pointerEvents: 'auto' }}
+          onMouseDown={handleMoveStart}
+        />
+
+        {handles.map(({ pos, x, y, cursor }) => (
+          <g key={pos}>
+            <rect
+              x={x - handleSize / 2}
+              y={y - handleSize / 2}
+              width={handleSize}
+              height={handleSize}
+              rx={handleRadius}
+              {...handleStyle}
+              style={{ pointerEvents: 'none' }}
+            />
+            <rect
+              x={x - hitHandleSize / 2}
+              y={y - hitHandleSize / 2}
+              width={hitHandleSize}
+              height={hitHandleSize}
+              fill="transparent"
+              style={{ cursor, pointerEvents: 'auto' }}
+              onMouseDown={e => handleResizeStart(e, pos)}
+            />
+          </g>
+        ))}
+      </svg>
+
+      {showHint && (
+        <div
+          className="pointer-events-none absolute rounded-md border border-white/15 bg-black/75 px-2 py-1 text-xs font-medium whitespace-nowrap text-white/90 shadow-sm select-none"
+          style={{
+            left: hintX,
+            top: hintY,
+            transform: `translate(-50%, 0) scale(${invZoom})`,
+            transformOrigin: 'top center',
+          }}
+        >
+          Press Enter to crop
+        </div>
+      )}
+    </div>
   );
 };
 
