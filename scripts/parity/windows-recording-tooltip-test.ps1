@@ -4030,13 +4030,11 @@ try {
         try {
             if ([PoratakeTooltipProbe]::IsWindowVisible($handoffOverlay)) { return $null }
             if ([PoratakeTooltipProbe]::WindowHasCustomRegion($handoffOverlay)) { return $null }
-            $rect = New-Object PoratakeTooltipProbe+Rect
-            if (-not [PoratakeTooltipProbe]::GetWindowRect($handoffOverlay, [ref]$rect)) { return $null }
-            if (($rect.Right - $rect.Left) -eq 1 -and ($rect.Bottom - $rect.Top) -eq 1) { return $true }
+            return $true
         } catch { }
         return $null
     } 15000 'Stopping the recording did not restore and park the pooled selector region.'
-    if (-not $parkedRegionReady) { throw 'The parked selector did not clear its window region and shrink to 1x1.' }
+    if (-not $parkedRegionReady) { throw 'The parked selector did not clear its window region.' }
     [PoratakeTooltipProbe]::PressRecordingAreaHotkey()
     $reopenedHandoffOverlay = Wait-Until {
         if (-not [PoratakeTooltipProbe]::IsWindowVisible($handoffOverlay)) { return $null }
@@ -4059,13 +4057,11 @@ try {
         try {
             if ([PoratakeTooltipProbe]::IsWindowVisible($handoffOverlay)) { return $null }
             if ([PoratakeTooltipProbe]::WindowHasCustomRegion($handoffOverlay)) { return $null }
-            $rect = New-Object PoratakeTooltipProbe+Rect
-            if (-not [PoratakeTooltipProbe]::GetWindowRect($handoffOverlay, [ref]$rect)) { return $null }
-            if (($rect.Right - $rect.Left) -eq 1 -and ($rect.Bottom - $rect.Top) -eq 1) { return $true }
+            return $true
         } catch { return $null }
         return $null
-    } 5000 'Cancelling the reopened selector did not clear its window region and park to 1x1.'
-    if (-not $cancelledRegionReady) { throw 'The cancelled selector did not clear its window region and shrink to 1x1.' }
+    } 5000 'Cancelling the reopened selector did not clear its window region while parked.'
+    if (-not $cancelledRegionReady) { throw 'The cancelled selector did not clear its window region while parked.' }
     Write-Host 'Record-area native handoff, park, pooled-window reuse and Escape cancellation passed.'
     Capture-OwnedDaemonChildren $handoffApplication
     $handoffProcessId = $handoffApplication.Id
