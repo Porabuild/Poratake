@@ -1922,16 +1922,22 @@ fn load_preview_thumbnails(
     Option<Arc<gpui::RenderImage>>,
     Option<Arc<gpui::RenderImage>>,
 ) {
-    let Ok(decoded) = crate::render::images::open(path) else {
-        return (None, None);
+    let target_w = PREVIEW_WIDTH as u32;
+    let target_h = PREVIEW_HEIGHT as u32;
+    let scaled = match crate::thumbnails::decode_cover_rgba(path, target_w, target_h) {
+        Some(scaled) => scaled,
+        None => {
+            let Ok(decoded) = crate::render::images::open(path) else {
+                return (None, None);
+            };
+            let scaled = decoded
+                .resize_to_fill(target_w, target_h, image::imageops::FilterType::Triangle)
+                .into_rgba8();
+            drop(decoded);
+            crate::system::memory::compact_heap();
+            scaled
+        }
     };
-    let scaled = decoded
-        .resize_to_fill(
-            PREVIEW_WIDTH as u32,
-            PREVIEW_HEIGHT as u32,
-            image::imageops::FilterType::Triangle,
-        )
-        .into_rgba8();
     let blurred = blur_thumbnail(&scaled);
     (Some(render_thumbnail(scaled)), blurred)
 }
@@ -2056,6 +2062,7 @@ fn copy_screenshot(
                     match result {
                         Ok(bytes) => {
                             crate::system::clipboard::ClipboardService::write_png(cx, bytes);
+                            crate::system::memory::compact_heap();
                             begin_remove_preview(
                                 view,
                                 id,

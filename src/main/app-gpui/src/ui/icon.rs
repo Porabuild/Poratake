@@ -2,25 +2,19 @@
 //! painted through `canvas()` + `PathBuilder::stroke` with round caps and
 //! joins — the same look `lucide-react` produces in the Electron renderer.
 
-use gpui::{
-    canvas, div, prelude::*, px, App, PathBuilder, Pixels, RenderOnce, StrokeOptions, Window,
-};
+use gpui::{canvas, div, prelude::*, px, App, Pixels, RenderOnce, Window};
 use herogpui::gpui;
-
-use crate::ui::svg_path::{parse_path, PathCommand};
 
 mod data {
     include!("icons_data.rs");
 }
 
-/// Icon size constants used across the design system (lucide defaults).
 #[allow(dead_code)]
 pub const ICON_SM: f32 = 14.0;
 pub const ICON_MD: f32 = 16.0;
 #[allow(dead_code)]
 pub const ICON_LG: f32 = 20.0;
 
-const VIEWBOX: f32 = 24.0;
 const STROKE_WIDTH: f32 = 2.0;
 const SPIN_MS: u64 = 1000;
 
@@ -103,8 +97,7 @@ impl RenderOnce for Icon {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
         let path_data = self.path;
         let side = self.size;
-        let scale = f32::from(self.size) / VIEWBOX;
-        let stroke_width = self.stroke_width.unwrap_or(STROKE_WIDTH) * scale;
+        let stroke_width = self.stroke_width.unwrap_or(STROKE_WIDTH);
         let rotation = self.rotation;
 
         canvas(
@@ -122,12 +115,29 @@ impl RenderOnce for Icon {
                     }
                 }
             },
-            move |bounds, _: (), window, _cx| {
-                if let Some(path) =
-                    build_stroked_path(path_data, bounds.origin, scale, stroke_width, rotation)
-                {
-                    window.paint_path(path, window.text_style().color);
+            move |bounds, _: (), window, cx| {
+                if bounds.size.width <= px(0.0) || bounds.size.height <= px(0.0) {
+                    return;
                 }
+                let transformation = if rotation == 0.0 {
+                    gpui::TransformationMatrix::unit()
+                } else {
+                    let scale_factor = window.scale_factor();
+                    let center = bounds.center();
+                    gpui::TransformationMatrix::unit()
+                        .translate(center.scale(scale_factor))
+                        .rotate(gpui::radians(rotation * std::f32::consts::TAU))
+                        .translate(center.scale(-scale_factor))
+                };
+                let (key, svg) = cached_icon_svg(path_data, stroke_width);
+                let _ = window.paint_svg(
+                    bounds,
+                    key,
+                    Some(svg.as_ref()),
+                    transformation,
+                    window.text_style().color,
+                    cx,
+                );
             },
         )
         .w(side)
@@ -135,75 +145,48 @@ impl RenderOnce for Icon {
     }
 }
 
-fn build_stroked_path(
-    path_data: &str,
-    origin: gpui::Point<Pixels>,
-    scale: f32,
+fn cached_icon_svg(
+    path_data: &'static str,
     stroke_width: f32,
-    rotation: f32,
-) -> Option<gpui::Path<Pixels>> {
-    let commands = parse_path(path_data);
-    if commands.is_empty() {
-        return None;
+) -> (gpui::SharedString, std::sync::Arc<[u8]>) {
+    use std::collections::HashMap;
+    use std::sync::{Arc, OnceLock};
+
+    static CACHE: OnceLock<
+        parking_lot::Mutex<HashMap<(usize, u32), (gpui::SharedString, Arc<[u8]>)>>,
+    > = OnceLock::new();
+
+    let cache_key = (path_data.as_ptr() as usize, stroke_width.to_bits());
+    let mut cache = CACHE
+        .get_or_init(|| parking_lot::Mutex::new(HashMap::new()))
+        .lock();
+    if let Some((key, bytes)) = cache.get(&cache_key) {
+        return (key.clone(), Arc::clone(bytes));
     }
+    let key = icon_svg_key(path_data, stroke_width);
+    let bytes: Arc<[u8]> = Arc::from(icon_svg_document(path_data, stroke_width).into_bytes());
+    cache.insert(cache_key, (key.clone(), Arc::clone(&bytes)));
+    (key, bytes)
+}
 
-    let mut builder = PathBuilder::stroke(px(stroke_width));
-    if let gpui::PathStyle::Stroke(options) = &mut builder.style {
-        let width = options.line_width;
-        *options = StrokeOptions::default()
-            .with_line_width(width)
-            .with_line_cap(lyon::path::LineCap::Round)
-            .with_line_join(lyon::path::LineJoin::Round);
-    }
+fn icon_svg_key(path_data: &str, stroke_width: f32) -> gpui::SharedString {
+    use std::hash::{Hash, Hasher};
 
-    let angle = rotation * std::f32::consts::TAU;
-    let (sin, cos) = angle.sin_cos();
-    let centre = VIEWBOX / 2.0;
-    let at = |x: f32, y: f32| {
-        let (x, y) = if rotation == 0.0 {
-            (x, y)
-        } else {
-            let (dx, dy) = (x - centre, y - centre);
-            (centre + dx * cos - dy * sin, centre + dx * sin + dy * cos)
-        };
-        gpui::point(origin.x + px(x * scale), origin.y + px(y * scale))
-    };
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    path_data.hash(&mut hasher);
+    stroke_width.to_bits().hash(&mut hasher);
+    format!(
+        "poratake-icon:{:016x}:{:08x}",
+        hasher.finish(),
+        stroke_width.to_bits()
+    )
+    .into()
+}
 
-    for command in commands {
-        match command {
-            PathCommand::MoveTo { x, y } => builder.move_to(at(x, y)),
-            PathCommand::LineTo { x, y } => builder.line_to(at(x, y)),
-            PathCommand::CubicTo {
-                x1,
-                y1,
-                x2,
-                y2,
-                x,
-                y,
-            } => {
-                builder.cubic_bezier_to(at(x, y), at(x1, y1), at(x2, y2));
-            }
-            PathCommand::QuadTo { x1, y1, x, y } => builder.curve_to(at(x, y), at(x1, y1)),
-            PathCommand::ArcTo {
-                rx,
-                ry,
-                rotation,
-                large_arc,
-                sweep,
-                x,
-                y,
-            } => builder.arc_to(
-                gpui::point(px(rx * scale), px(ry * scale)),
-                px(rotation),
-                large_arc,
-                sweep,
-                at(x, y),
-            ),
-            PathCommand::Close => builder.close(),
-        }
-    }
-
-    builder.build().ok()
+fn icon_svg_document(path_data: &str, stroke_width: f32) -> String {
+    format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="{stroke_width}" stroke-linecap="round" stroke-linejoin="round"><path d="{path_data}"/></svg>"#
+    )
 }
 
 /// Renders an icon by name centered in a box of its own size; falls back to an
@@ -386,5 +369,19 @@ mod tests {
         );
         assert_eq!(icon_data("TRASH-2"), exact, "case is no longer ignored");
         assert!(icon_data("definitely-not-an-icon").is_none());
+    }
+
+    #[test]
+    fn every_icon_produces_a_valid_svg_document() {
+        let options = usvg::Options::default();
+        for (name, path_data) in data::ICONS {
+            let document = icon_svg_document(path_data, STROKE_WIDTH);
+            let tree = usvg::Tree::from_str(&document, &options)
+                .unwrap_or_else(|error| panic!("invalid SVG for {name}: {error}"));
+            assert!(
+                !tree.root().children().is_empty(),
+                "empty SVG tree for {name}"
+            );
+        }
     }
 }

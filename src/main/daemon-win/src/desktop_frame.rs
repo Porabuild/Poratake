@@ -28,7 +28,7 @@ use windows::Win32::Graphics::Direct3D11::{
 use windows::Win32::Graphics::Dxgi::{IDXGIAdapter, IDXGIDevice, IDXGIDevice3};
 use windows::Win32::Graphics::Gdi::{
     BitBlt, CAPTUREBLT, CreateCompatibleDC, CreateDIBSection, DIB_RGB_COLORS, DeleteDC,
-    DeleteObject, GdiFlush, GetDC, HBITMAP, HMONITOR, MONITOR_DEFAULTTONEAREST, MonitorFromPoint,
+    DeleteObject, GdiFlush, GetDC, HMONITOR, MONITOR_DEFAULTTONEAREST, MonitorFromPoint,
     MonitorFromWindow, ReleaseDC, SRCCOPY, SelectObject,
 };
 use windows::Win32::Graphics::Imaging::{
@@ -53,7 +53,7 @@ use windows::core::{IInspectable, Interface, PCWSTR, factory};
 const FRAME_POOL_SIZE: i32 = 1;
 const FRAME_TIMEOUT: Duration = Duration::from_secs(3);
 const CAPTURE_TIMEOUT: Duration = Duration::from_secs(10);
-const IDLE_CAPTURE_RELEASE_DELAY: Duration = Duration::from_secs(5);
+const IDLE_CAPTURE_RELEASE_DELAY: Duration = Duration::from_secs(2);
 const BYTES_PER_PIXEL: usize = 4;
 const HDR_BYTES_PER_PIXEL: usize = 8;
 const BMP_HEADER_SIZE: usize = 54;
@@ -69,7 +69,7 @@ pub struct DesktopFrame {
 }
 
 pub struct FrozenComposition {
-    frames: Arc<[DesktopFrame]>,
+    frames: Arc<[Arc<DesktopFrame>]>,
     bounds: RECT,
     width: u32,
     height: u32,
@@ -172,37 +172,34 @@ pub fn prewarm_capture() {
 }
 
 pub fn capture_rect(bounds: RECT) -> Result<DesktopFrame, String> {
-    let frame = capture_display_frame(bounds)?;
-    crop(&frame, bounds).ok_or_else(|| "The capture area is outside the display bounds".to_string())
-}
-
-pub fn capture_display_frame(bounds: RECT) -> Result<DesktopFrame, String> {
-    crate::trace::trace("capture_display_frame enter");
+    crate::trace::trace("capture_rect enter");
     let monitor = monitor_for_rect(bounds)
         .ok_or_else(|| "The capture area is not on a connected display".to_string())?;
     let monitor_bounds = monitor.rect;
+    let gdi_bounds = intersect_rects(monitor_bounds, bounds)
+        .ok_or_else(|| "The capture area is outside the display bounds".to_string())?;
     crate::trace::trace("monitor resolved, running WGC");
 
     let captured = run_isolated(CAPTURE_TIMEOUT, move || {
         let monitor = monitor_for_rect(monitor_bounds)
             .ok_or_else(|| "The display is no longer connected".to_string())?;
-        capture_with_cached_device(&monitor, capture_monitor)
+        capture_with_cached_device(&monitor, |device, monitor| {
+            capture_monitor_region(device, monitor, Some(bounds))
+        })
     })
     .unwrap_or_else(|| Err("Timed out while capturing the screen".to_string()));
 
     crate::trace::trace("WGC finished");
 
-    // The GDI fallback gets the same isolation timeout as the primary path;
-    // without it a wedged BitBlt would leave requests unanswered forever.
     let result = captured.or_else(|error| {
         crate::trace::trace("GDI fallback starting");
-        match run_isolated(CAPTURE_TIMEOUT, move || capture_with_gdi(monitor_bounds)) {
+        match run_isolated(CAPTURE_TIMEOUT, move || capture_with_gdi(gdi_bounds)) {
             Some(Some(frame)) => Ok(frame),
             Some(None) => Err(format!("{error}; GDI fallback failed")),
             None => Err(format!("{error}; GDI fallback timed out")),
         }
     });
-    crate::trace::trace("capture_display_frame exit");
+    crate::trace::trace("capture_rect exit");
     result
 }
 
@@ -222,13 +219,13 @@ pub fn capture_window(window: HWND) -> Result<DesktopFrame, String> {
         let white_scale = hdr_white_scale(&entry.device);
 
         capture_with_cached_device(&entry, |device, _| {
-            capture_item(device, &item, RECT::default(), white_scale, true)
+            capture_item(device, &item, RECT::default(), None, white_scale, true)
         })
     })
     .unwrap_or_else(|| Err("Timed out while capturing the window".to_string()))
 }
 
-pub fn store_frozen(frames: Vec<DesktopFrame>) {
+pub fn store_frozen(frames: Vec<Arc<DesktopFrame>>) {
     if let Ok(mut frozen) = frozen_frames().lock() {
         *frozen = Arc::from(frames);
     }
@@ -265,7 +262,7 @@ pub fn frozen_composition(bounds: RECT) -> Result<Option<FrozenComposition>, Str
     }))
 }
 
-fn frozen_snapshot() -> Result<Arc<[DesktopFrame]>, String> {
+fn frozen_snapshot() -> Result<Arc<[Arc<DesktopFrame>]>, String> {
     frozen_frames()
         .lock()
         .map(|frozen| Arc::clone(&frozen))
@@ -444,10 +441,13 @@ fn validate_cached_composition_work(width: i32, height: i32) -> Result<(), Strin
 }
 
 #[cfg(test)]
-fn composite_frames(frames: &[DesktopFrame], bounds: RECT) -> Result<DesktopFrame, String> {
+fn composite_frames<T: std::borrow::Borrow<DesktopFrame>>(
+    frames: &[T],
+    bounds: RECT,
+) -> Result<DesktopFrame, String> {
     if !frames
         .iter()
-        .any(|frame| intersect_rects(frame.bounds, bounds).is_some())
+        .any(|frame| intersect_rects(frame.borrow().bounds, bounds).is_some())
     {
         return Err("The capture area does not intersect the frozen displays".to_string());
     }
@@ -468,6 +468,7 @@ fn composite_frames(frames: &[DesktopFrame], bounds: RECT) -> Result<DesktopFram
     let mut copied = false;
 
     for frame in frames {
+        let frame = frame.borrow();
         let Some(intersection) = intersect_rects(frame.bounds, bounds) else {
             continue;
         };
@@ -517,24 +518,33 @@ fn composition_dimensions(bounds: RECT) -> Result<(i32, i32), String> {
     Ok((width, height))
 }
 
-fn crop_bounds(frame: &DesktopFrame, bounds: RECT) -> Option<(i32, i32, i32, i32)> {
-    let source_width = rect_width(&frame.bounds);
-    let source_height = rect_height(&frame.bounds);
+fn crop_bounds_for_size(
+    frame_bounds: RECT,
+    frame_width: u32,
+    frame_height: u32,
+    bounds: RECT,
+) -> Option<(i32, i32, i32, i32)> {
+    let source_width = rect_width(&frame_bounds);
+    let source_height = rect_height(&frame_bounds);
     if source_width <= 0 || source_height <= 0 {
         return None;
     }
-    let scale_x = frame.width as f64 / source_width as f64;
-    let scale_y = frame.height as f64 / source_height as f64;
-    let left = scaled_offset(bounds.left, frame.bounds.left, scale_x, frame.width as i32);
-    let top = scaled_offset(bounds.top, frame.bounds.top, scale_y, frame.height as i32);
-    let right = scaled_offset(bounds.right, frame.bounds.left, scale_x, frame.width as i32);
+    let scale_x = frame_width as f64 / source_width as f64;
+    let scale_y = frame_height as f64 / source_height as f64;
+    let left = scaled_offset(bounds.left, frame_bounds.left, scale_x, frame_width as i32);
+    let top = scaled_offset(bounds.top, frame_bounds.top, scale_y, frame_height as i32);
+    let right = scaled_offset(bounds.right, frame_bounds.left, scale_x, frame_width as i32);
     let bottom = scaled_offset(
         bounds.bottom,
-        frame.bounds.top,
+        frame_bounds.top,
         scale_y,
-        frame.height as i32,
+        frame_height as i32,
     );
     (left < right && top < bottom).then_some((left, top, right, bottom))
+}
+
+fn crop_bounds(frame: &DesktopFrame, bounds: RECT) -> Option<(i32, i32, i32, i32)> {
+    crop_bounds_for_size(frame.bounds, frame.width, frame.height, bounds)
 }
 
 fn intersect_rects(left: RECT, right: RECT) -> Option<RECT> {
@@ -547,30 +557,6 @@ fn intersect_rects(left: RECT, right: RECT) -> Option<RECT> {
 
     (intersection.left < intersection.right && intersection.top < intersection.bottom)
         .then_some(intersection)
-}
-
-pub fn to_hbitmap(frame: &DesktopFrame) -> Option<HBITMAP> {
-    let info = bitmap_info(
-        frame.width as i32,
-        frame.height as i32,
-        frame.width * frame.height * BYTES_PER_PIXEL as u32,
-    );
-    let mut bits: *mut c_void = null_mut();
-    let bitmap =
-        unsafe { CreateDIBSection(None, &info, DIB_RGB_COLORS, &mut bits, None, 0) }.ok()?;
-
-    if bits.is_null() {
-        unsafe {
-            let _ = DeleteObject(bitmap.into());
-        }
-        return None;
-    }
-
-    unsafe {
-        std::ptr::copy_nonoverlapping(frame.pixels.as_ptr(), bits as *mut u8, frame.pixels.len());
-    }
-
-    Some(bitmap)
 }
 
 pub fn write_image(frame: &DesktopFrame, path: &str) -> Result<(), String> {
@@ -965,8 +951,8 @@ fn capture_with_cached_device(
     captured
 }
 
-fn frozen_frames() -> &'static Mutex<Arc<[DesktopFrame]>> {
-    static FROZEN: OnceLock<Mutex<Arc<[DesktopFrame]>>> = OnceLock::new();
+fn frozen_frames() -> &'static Mutex<Arc<[Arc<DesktopFrame>]>> {
+    static FROZEN: OnceLock<Mutex<Arc<[Arc<DesktopFrame>]>>> = OnceLock::new();
     FROZEN.get_or_init(|| Mutex::new(Arc::from([])))
 }
 
@@ -1098,6 +1084,14 @@ fn capture_monitor(
     device: &mut CaptureDevice,
     monitor: &MonitorEntry,
 ) -> Result<DesktopFrame, String> {
+    capture_monitor_region(device, monitor, None)
+}
+
+fn capture_monitor_region(
+    device: &mut CaptureDevice,
+    monitor: &MonitorEntry,
+    crop_target: Option<RECT>,
+) -> Result<DesktopFrame, String> {
     let interop = capture_interop()?;
     let handle = HMONITOR(monitor.handle as *mut c_void);
     let item = unsafe { interop.CreateForMonitor(handle) }
@@ -1107,6 +1101,7 @@ fn capture_monitor(
         device,
         &item,
         monitor.rect,
+        crop_target,
         hdr_white_scale(&monitor.device),
         false,
     )
@@ -1134,6 +1129,7 @@ fn capture_item(
     device: &mut CaptureDevice,
     item: &GraphicsCaptureItem,
     bounds: RECT,
+    crop_target: Option<RECT>,
     white_scale: Option<f32>,
     preserve_alpha: bool,
 ) -> Result<DesktopFrame, String> {
@@ -1193,7 +1189,14 @@ fn capture_item(
         })
         .and_then(|frame| {
             log_capture_timing("read", || {
-                read_pixels(device, &frame, white_scale, preserve_alpha)
+                read_pixels(
+                    device,
+                    &frame,
+                    bounds,
+                    crop_target,
+                    white_scale,
+                    preserve_alpha,
+                )
             })
         });
 
@@ -1201,10 +1204,11 @@ fn capture_item(
     let _ = pool.RemoveFrameArrived(token);
     drop(receiver);
     let _ = pool.Close();
+    device.trim();
 
     let (width, height, pixels) = captured?;
     Ok(DesktopFrame {
-        bounds,
+        bounds: crop_target.unwrap_or(bounds),
         width,
         height,
         pixels,
@@ -1214,6 +1218,8 @@ fn capture_item(
 fn read_pixels(
     device: &mut CaptureDevice,
     frame: &Direct3D11CaptureFrame,
+    bounds: RECT,
+    crop_target: Option<RECT>,
     white_scale: Option<f32>,
     preserve_alpha: bool,
 ) -> Result<(u32, u32, Vec<u8>), String> {
@@ -1228,6 +1234,16 @@ fn read_pixels(
 
     let mut descriptor = D3D11_TEXTURE2D_DESC::default();
     unsafe { source.GetDesc(&mut descriptor) };
+
+    let region = match crop_target {
+        Some(target) => {
+            let (left, top, right, bottom) =
+                crop_bounds_for_size(bounds, descriptor.Width, descriptor.Height, target)
+                    .ok_or_else(|| "The capture area is outside the display bounds".to_string())?;
+            (left as usize, top as usize, right as usize, bottom as usize)
+        }
+        None => (0, 0, descriptor.Width as usize, descriptor.Height as usize),
+    };
 
     let staging = device.staging_texture(&descriptor)?;
 
@@ -1251,21 +1267,18 @@ fn read_pixels(
             .map_err(|error| format!("Failed to read the capture buffer: {error}"))?;
     }
 
-    let pixels = convert_pixels(
-        &mapped,
-        descriptor.Width as usize,
-        descriptor.Height as usize,
-        white_scale,
-        preserve_alpha,
-    );
+    let pixels = convert_pixels_region(&mapped, region, white_scale, preserve_alpha);
 
     unsafe {
         device.context.Unmap(&target_resource, 0);
     }
 
-    pixels.map(|pixels| (descriptor.Width, descriptor.Height, pixels))
+    let width = (region.2 - region.0) as u32;
+    let height = (region.3 - region.1) as u32;
+    pixels.map(|pixels| (width, height, pixels))
 }
 
+#[cfg(test)]
 fn convert_pixels(
     mapped: &D3D11_MAPPED_SUBRESOURCE,
     width: usize,
@@ -1273,6 +1286,18 @@ fn convert_pixels(
     white_scale: Option<f32>,
     preserve_alpha: bool,
 ) -> Result<Vec<u8>, String> {
+    convert_pixels_region(mapped, (0, 0, width, height), white_scale, preserve_alpha)
+}
+
+fn convert_pixels_region(
+    mapped: &D3D11_MAPPED_SUBRESOURCE,
+    region: (usize, usize, usize, usize),
+    white_scale: Option<f32>,
+    preserve_alpha: bool,
+) -> Result<Vec<u8>, String> {
+    let (left, top, right, bottom) = region;
+    let width = right - left;
+    let height = bottom - top;
     let stride = width * BYTES_PER_PIXEL;
     let pitch = mapped.RowPitch as usize;
     let mut pixels = Vec::new();
@@ -1280,11 +1305,13 @@ fn convert_pixels(
         .try_reserve_exact(stride * height)
         .map_err(|_| "Not enough memory to read the screen contents".to_string())?;
 
-    let source = unsafe { std::slice::from_raw_parts(mapped.pData as *const u8, pitch * height) };
+    let source = unsafe { std::slice::from_raw_parts(mapped.pData as *const u8, pitch * bottom) };
 
     let Some(white_scale) = white_scale else {
-        for row in 0..height {
-            pixels.extend_from_slice(&source[row * pitch..row * pitch + stride]);
+        let row_left = left * BYTES_PER_PIXEL;
+        for row in top..bottom {
+            let start = row * pitch + row_left;
+            pixels.extend_from_slice(&source[start..start + stride]);
         }
         if !preserve_alpha {
             for pixel in pixels.as_chunks_mut::<BYTES_PER_PIXEL>().0 {
@@ -1296,9 +1323,12 @@ fn convert_pixels(
 
     pixels.resize(stride * height, 0);
     let mapper = ToneMapper::new(white_scale);
-    for row in 0..height {
-        let source_row = &source[row * pitch..row * pitch + width * HDR_BYTES_PER_PIXEL];
-        let target_row = &mut pixels[row * stride..(row + 1) * stride];
+    let row_left = left * HDR_BYTES_PER_PIXEL;
+    let row_hdr_bytes = width * HDR_BYTES_PER_PIXEL;
+    for (out_row, row) in (top..bottom).enumerate() {
+        let start = row * pitch + row_left;
+        let source_row = &source[start..start + row_hdr_bytes];
+        let target_row = &mut pixels[out_row * stride..(out_row + 1) * stride];
 
         for (channels, pixel) in source_row
             .as_chunks::<HDR_BYTES_PER_PIXEL>()
@@ -1350,6 +1380,7 @@ fn half_to_f32(bits: u16) -> f32 {
     f32::from_bits(sign | value)
 }
 
+#[cfg(test)]
 pub fn crop(frame: &DesktopFrame, bounds: RECT) -> Option<DesktopFrame> {
     let source_width = rect_width(&frame.bounds);
     let source_height = rect_height(&frame.bounds);
@@ -1618,7 +1649,7 @@ mod tests {
     fn test_composition(frames: Vec<DesktopFrame>, bounds: RECT) -> FrozenComposition {
         let (width, height) = composition_dimensions(bounds).unwrap();
         FrozenComposition {
-            frames: Arc::from(frames),
+            frames: frames.into_iter().map(Arc::new).collect(),
             bounds,
             width: width as u32,
             height: height as u32,
@@ -2083,6 +2114,23 @@ mod tests {
         let pixels = convert_pixels(&mapped, 2, 1, None, false).expect("pixels");
 
         assert_eq!(pixels, vec![1, 2, 3, 255, 4, 5, 6, 255]);
+    }
+
+    #[test]
+    fn converts_cropped_subregion_without_full_frame_copy() {
+        let mut source = vec![
+            1, 2, 3, 255, 4, 5, 6, 255, 7, 8, 9, 255, 10, 11, 12, 255, 13, 14, 15, 255, 16, 17, 18,
+            255,
+        ];
+        let mapped = D3D11_MAPPED_SUBRESOURCE {
+            pData: source.as_mut_ptr().cast(),
+            RowPitch: 12,
+            ..Default::default()
+        };
+
+        let pixels = convert_pixels_region(&mapped, (1, 1, 3, 2), None, false).expect("cropped");
+
+        assert_eq!(pixels, vec![13, 14, 15, 255, 16, 17, 18, 255]);
     }
 
     #[test]

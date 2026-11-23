@@ -6,6 +6,7 @@ use std::{
 use anyhow::{Context, Result};
 use gpui_util::ResultExt;
 use windows::{
+    core::{Interface, HSTRING},
     Win32::{
         Foundation::HWND,
         Graphics::{
@@ -16,7 +17,6 @@ use windows::{
             Dxgi::{Common::*, *},
         },
     },
-    core::{HSTRING, Interface},
 };
 
 use crate::directx_renderer::shader_resources::{RawShaderBytes, ShaderModule, ShaderTarget};
@@ -102,6 +102,7 @@ struct DirectXGlobalElements {
     global_params_buffer: Option<ID3D11Buffer>,
     batch_params_buffer: Option<ID3D11Buffer>,
     sampler: Option<ID3D11SamplerState>,
+    rasterizer_state: ID3D11RasterizerState,
 }
 
 struct Annotation<'a>(&'a ID3DUserDefinedAnnotation);
@@ -234,6 +235,7 @@ impl DirectXRenderer {
             );
             device_context
                 .OMSetRenderTargets(Some(slice::from_ref(&resources.render_target_view)), None);
+            device_context.RSSetState(&self.globals.rasterizer_state);
             device_context.RSSetViewports(Some(slice::from_ref(&resources.viewport)));
             device_context
                 .VSSetConstantBuffers(0, Some(slice::from_ref(&self.globals.global_params_buffer)));
@@ -355,6 +357,34 @@ impl DirectXRenderer {
         scene: &Scene,
         background_appearance: WindowBackgroundAppearance,
     ) -> Result<()> {
+        if scene.paths.is_empty()
+            && self
+                .resources
+                .as_ref()
+                .is_some_and(|resources| resources.path_intermediate.is_some())
+        {
+            if let Some(devices) = &self.devices {
+                unsafe {
+                    devices
+                        .device_context
+                        .VSSetShaderResources(0, Some(&[None]));
+                    devices
+                        .device_context
+                        .PSSetShaderResources(0, Some(&[None]));
+                }
+            }
+            if let Some(resources) = &mut self.resources {
+                resources.path_intermediate = None;
+            }
+            if let Some(devices) = &self.devices {
+                unsafe {
+                    devices.device_context.Flush();
+                    if let Ok(dxgi_device) = devices.device.cast::<IDXGIDevice3>() {
+                        dxgi_device.Trim();
+                    }
+                }
+            }
+        }
         self.pre_draw(&match background_appearance {
             WindowBackgroundAppearance::Opaque => [1.0f32; 4],
             _ => [0.0f32; 4],
@@ -492,15 +522,26 @@ impl DirectXRenderer {
         if self.width == width && self.height == height {
             return Ok(());
         }
+        let shrunk =
+            u64::from(width) * u64::from(height) < u64::from(self.width) * u64::from(self.height);
         self.width = width;
         self.height = height;
 
         // Clear the render target before resizing
         let devices = self.devices.as_ref().context("devices missing")?;
-        unsafe { devices.device_context.OMSetRenderTargets(None, None) };
+        unsafe {
+            devices.device_context.OMSetRenderTargets(None, None);
+            devices
+                .device_context
+                .VSSetShaderResources(0, Some(&[None]));
+            devices
+                .device_context
+                .PSSetShaderResources(0, Some(&[None]));
+        }
         let resources = self.resources.as_mut().context("resources missing")?;
         resources.render_target.take();
         resources.render_target_view.take();
+        resources.path_intermediate = None;
 
         // Resizing the swap chain requires a call to the underlying DXGI adapter, which can return the device removed error.
         // The app might have moved to a monitor that's attached to a different graphics device.
@@ -520,6 +561,16 @@ impl DirectXRenderer {
         }
 
         resources.recreate_resources(devices, width, height)?;
+
+        if shrunk {
+            unsafe {
+                devices.device_context.ClearState();
+                devices.device_context.Flush();
+                if let Ok(dxgi_device) = devices.device.cast::<IDXGIDevice3>() {
+                    dxgi_device.Trim();
+                }
+            }
+        }
 
         unsafe {
             devices
@@ -899,7 +950,6 @@ impl DirectXResources {
 
         let (render_target, render_target_view, viewport) =
             create_resources(devices, &swap_chain, width, height)?;
-        set_rasterizer_state(&devices.device, &devices.device_context)?;
 
         Ok(Self {
             swap_chain,
@@ -1065,10 +1115,13 @@ impl DirectXGlobalElements {
             output
         };
 
+        let rasterizer_state = create_rasterizer_state(device)?;
+
         Ok(Self {
             global_params_buffer,
             batch_params_buffer,
             sampler,
+            rasterizer_state,
         })
     }
 }
@@ -1291,8 +1344,25 @@ struct PathSprite {
 
 impl Drop for DirectXRenderer {
     fn drop(&mut self) {
-        #[cfg(debug_assertions)]
-        if let Some(devices) = &self.devices {
+        if let Some(composition) = self.direct_composition.take() {
+            unsafe {
+                let _ = composition
+                    .comp_visual
+                    .SetContent(None::<&windows::core::IUnknown>);
+                let _ = composition.comp_target.SetRoot(None);
+                let _ = composition.comp_device.Commit();
+            }
+        }
+        self.resources.take();
+        if let Some(devices) = self.devices.take() {
+            unsafe {
+                devices.device_context.ClearState();
+                devices.device_context.Flush();
+                if let Ok(dxgi_device) = devices.device.cast::<IDXGIDevice3>() {
+                    dxgi_device.Trim();
+                }
+            }
+            #[cfg(debug_assertions)]
             report_live_objects(&devices.device).ok();
         }
     }
@@ -1460,7 +1530,7 @@ fn create_path_intermediate_msaa_texture_and_view(
 }
 
 #[inline]
-fn set_rasterizer_state(device: &ID3D11Device, device_context: &ID3D11DeviceContext) -> Result<()> {
+fn create_rasterizer_state(device: &ID3D11Device) -> Result<ID3D11RasterizerState> {
     let desc = D3D11_RASTERIZER_DESC {
         FillMode: D3D11_FILL_SOLID,
         CullMode: D3D11_CULL_NONE,
@@ -1478,8 +1548,7 @@ fn set_rasterizer_state(device: &ID3D11Device, device_context: &ID3D11DeviceCont
         device.CreateRasterizerState(&desc, Some(&mut state))?;
         state.unwrap()
     };
-    unsafe { device_context.RSSetState(&rasterizer_state) };
-    Ok(())
+    Ok(rasterizer_state)
 }
 
 // https://learn.microsoft.com/en-us/windows/win32/api/d3d11/ns-d3d11-d3d11_blend_desc
@@ -1684,18 +1753,18 @@ fn report_live_objects(device: &ID3D11Device) -> Result<()> {
     Ok(())
 }
 
-const BUFFER_COUNT: usize = 3;
+const BUFFER_COUNT: usize = 2;
 
 pub(crate) mod shader_resources {
     use anyhow::Result;
 
     #[cfg(debug_assertions)]
     use windows::{
+        core::{HSTRING, PCSTR},
         Win32::Graphics::Direct3D::{
-            Fxc::{D3DCOMPILE_DEBUG, D3DCOMPILE_SKIP_OPTIMIZATION, D3DCompileFromFile},
+            Fxc::{D3DCompileFromFile, D3DCOMPILE_DEBUG, D3DCOMPILE_SKIP_OPTIMIZATION},
             ID3DBlob,
         },
-        core::{HSTRING, PCSTR},
     };
 
     #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -1885,7 +1954,7 @@ mod nvidia {
     };
 
     use anyhow::Result;
-    use windows::{Win32::System::LibraryLoader::GetProcAddress, core::s};
+    use windows::{core::s, Win32::System::LibraryLoader::GetProcAddress};
 
     use crate::with_dll_library;
 
@@ -1952,7 +2021,7 @@ mod amd {
     use std::os::raw::{c_char, c_int, c_void};
 
     use anyhow::Result;
-    use windows::{Win32::System::LibraryLoader::GetProcAddress, core::s};
+    use windows::{core::s, Win32::System::LibraryLoader::GetProcAddress};
 
     use crate::with_dll_library;
 
@@ -2045,8 +2114,8 @@ mod amd {
 
 mod dxgi {
     use windows::{
-        Win32::Graphics::Dxgi::{IDXGIAdapter1, IDXGIDevice},
         core::Interface,
+        Win32::Graphics::Dxgi::{IDXGIAdapter1, IDXGIDevice},
     };
 
     pub(super) fn get_driver_version(adapter: &IDXGIAdapter1) -> anyhow::Result<String> {
