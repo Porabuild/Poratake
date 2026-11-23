@@ -36,6 +36,7 @@ class MockBrowserWindow {
     (this.windowHandlers['closed'] || []).forEach(cb => cb());
   });
   setAlwaysOnTop = vi.fn();
+  setAspectRatio = vi.fn();
   isDestroyed = vi.fn(() => this.destroyedFlag);
   on = vi.fn((event: string, cb: (...a: unknown[]) => unknown) => {
     this.windowHandlers[event] ??= [];
@@ -143,7 +144,7 @@ describe('pin', () => {
       expect(browserWindows.length).toBe(1);
     });
 
-    it('screenshot:pin scales a full-screen image to half the work area', async () => {
+    it('screenshot:pin sizes a full-screen image to preview bounds at top-right', async () => {
       mockGetWindowData.mockReturnValue(undefined);
       mockNativeImageCreateFromBuffer.mockReturnValue({
         getSize: () => ({ width: 3840, height: 2160 }),
@@ -163,9 +164,17 @@ describe('pin', () => {
         }
       );
       expect(browserWindows[0].options).toMatchObject({
-        width: 960,
-        height: 540,
+        width: 200,
+        height: 112,
+        minWidth: 48,
+        minHeight: 48,
+        x: 1920 - 200 - 24,
+        y: 24,
+        resizable: true,
       });
+      expect(browserWindows[0].setAspectRatio).toHaveBeenCalledWith(
+        1920 / 1080
+      );
     });
 
     it('screenshot:pin closes existing screenshot window', async () => {

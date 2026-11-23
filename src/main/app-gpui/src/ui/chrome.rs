@@ -228,10 +228,9 @@ pub const RECORDING_TOP_MARGIN: f32 = 24.0;
 
 pub const PIN_PAD: f32 = 0.0;
 pub const PIN_OFFSET: f32 = 30.0;
-pub const PIN_MIN_SIZE: f32 = 100.0;
-pub const PIN_ORIGIN_Y: f32 = 20.0;
-pub const PIN_RIGHT_MARGIN: f32 = 20.0;
-pub const PIN_MIN_RIGHT: f32 = 120.0;
+pub const PIN_MIN_SIZE: f32 = 48.0;
+pub const PIN_ORIGIN_Y: f32 = PREVIEW_MARGIN;
+pub const PIN_RIGHT_MARGIN: f32 = PREVIEW_MARGIN;
 
 pub const ONBOARDING_WINDOW_WIDTH: f32 = 500.0;
 pub const ONBOARDING_WINDOW_HEIGHT: f32 = 650.0;
@@ -393,23 +392,50 @@ pub fn editor_window_size(
     )
 }
 
+fn pin_window_metrics(
+    image_width: f32,
+    image_height: f32,
+    work_width: f32,
+    work_height: f32,
+) -> ((f32, f32), Option<(f32, f32)>) {
+    let width = image_width.max(1.0);
+    let height = image_height.max(1.0);
+    let max_width = PREVIEW_WIDTH.min(work_width).max(1.0);
+    let max_height = PREVIEW_HEIGHT.min(work_height).max(1.0);
+    let min_width = PIN_MIN_SIZE.min(max_width);
+    let min_height = PIN_MIN_SIZE.min(max_height);
+    let scale = 1.0_f32.min(max_width / width).min(max_height / height);
+    let scaled_w = (width * scale).floor();
+    let scaled_h = (height * scale).floor();
+    let size = (
+        scaled_w.clamp(min_width, max_width),
+        scaled_h.clamp(min_height, max_height),
+    );
+    let aspect = (scaled_w >= min_width && scaled_h >= min_height).then_some((width, height));
+    (size, aspect)
+}
+
 pub fn pin_window_size(
     image_width: f32,
     image_height: f32,
     work_width: f32,
     work_height: f32,
 ) -> (f32, f32) {
-    let width = image_width.max(1.0);
-    let height = image_height.max(1.0);
-    let scale = 1.0_f32
-        .min((work_width * 0.5) / width)
-        .min((work_height * 0.5) / height);
-    ((width * scale).floor(), (height * scale).floor())
+    pin_window_metrics(image_width, image_height, work_width, work_height).0
+}
+
+pub fn pin_window_aspect_ratio(
+    image_width: f32,
+    image_height: f32,
+    work_width: f32,
+    work_height: f32,
+) -> Option<(f32, f32)> {
+    pin_window_metrics(image_width, image_height, work_width, work_height).1
 }
 
 pub fn pin_window_origin(window_width: f32, work_width: f32, existing: usize) -> (f32, f32) {
     let offset = existing as f32 * PIN_OFFSET;
-    let x = (work_width - window_width - PIN_RIGHT_MARGIN - offset).min(work_width - PIN_MIN_RIGHT);
+    let x = (work_width - window_width - PIN_RIGHT_MARGIN - offset).max(0.0);
     (x, PIN_ORIGIN_Y + offset)
 }
 
@@ -712,16 +738,21 @@ mod tests {
             Some((1920.0, 0.0, 1920.0, 1080.0))
         );
         assert_eq!(PIN_PAD, 0.0);
-        assert_eq!(PIN_MIN_SIZE, 100.0);
+        assert_eq!(PIN_MIN_SIZE, 48.0);
         assert_eq!(PIN_OFFSET, 30.0);
         assert_eq!(
             pin_window_size(400.0, 300.0, 1920.0, 1080.0),
-            (400.0, 300.0)
+            (186.0, 140.0)
         );
         assert_eq!(
             pin_window_size(2000.0, 2000.0, 1920.0, 1080.0),
-            (540.0, 540.0)
+            (140.0, 140.0)
         );
+        assert_eq!(
+            pin_window_size(1920.0, 1080.0, 1920.0, 1080.0),
+            (200.0, 112.0)
+        );
+        assert_eq!(pin_window_size(120.0, 80.0, 1920.0, 1080.0), (120.0, 80.0));
     }
 
     /// The button ladder is HeroGPUI's now (`Size::control_height`), so these

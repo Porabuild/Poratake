@@ -9,8 +9,8 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 use tiny_skia::{
-    BlendMode, Color, FillRule, FilterQuality, Mask, Paint, Path, PathBuilder, PathStroker, Pixmap,
-    PixmapPaint, PixmapRef, Rect, Shader, Stroke, Transform,
+    BlendMode, Color, FillRule, FilterQuality, IntSize, Mask, Paint, Path, PathBuilder,
+    PathStroker, Pixmap, PixmapPaint, PixmapRef, Rect, Shader, Stroke, Transform,
 };
 
 use crate::render::blur;
@@ -496,12 +496,13 @@ impl Canvas {
             quality,
         };
         let combined = self.state.transform.pre_concat(placement);
-        if self.state.clip.is_none() {
-            draw_pixmap_parallel(&mut self.pixmap, source, &paint, combined);
-            return;
-        }
-        self.pixmap
-            .draw_pixmap(0, 0, source, &paint, combined, self.state.clip.as_deref());
+        draw_pixmap_parallel(
+            &mut self.pixmap,
+            source,
+            &paint,
+            combined,
+            self.state.clip.as_deref(),
+        );
     }
 
     fn draw_pixmap_excluding_raw(
@@ -549,7 +550,16 @@ impl Canvas {
         std::thread::scope(|scope| {
             if ey0 > 0 {
                 scope.spawn(|| {
-                    draw_band_parallel(top_data, canvas_width, ey0, 0, source, &paint, combined);
+                    draw_band_parallel(
+                        top_data,
+                        canvas_width,
+                        ey0,
+                        0,
+                        source,
+                        &paint,
+                        combined,
+                        None,
+                    );
                 });
             }
             if canvas_height > ey1 {
@@ -563,6 +573,7 @@ impl Canvas {
                         source,
                         &paint,
                         combined,
+                        None,
                     );
                 });
             }
@@ -573,6 +584,7 @@ impl Canvas {
                         source,
                         &paint,
                         combined.post_translate(0.0, -(ey0 as f32)),
+                        None,
                     );
                 });
             }
@@ -583,6 +595,7 @@ impl Canvas {
                         source,
                         &paint,
                         combined.post_translate(-(ex1 as f32), -(ey0 as f32)),
+                        None,
                     );
                 });
             }
@@ -807,6 +820,7 @@ fn draw_pixmap_parallel(
     source: PixmapRef<'_>,
     paint: &PixmapPaint,
     transform: Transform,
+    clip: Option<&Mask>,
 ) {
     let width = target.width();
     let height = target.height();
@@ -818,9 +832,11 @@ fn draw_pixmap_parallel(
         source,
         paint,
         transform,
+        clip,
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_band_parallel(
     data: &mut [u8],
     width: u32,
@@ -829,41 +845,63 @@ fn draw_band_parallel(
     source: PixmapRef<'_>,
     paint: &PixmapPaint,
     transform: Transform,
+    clip: Option<&Mask>,
 ) {
     if width == 0 || height == 0 {
         return;
     }
     let workers = strip_workers(width, height);
-    if workers <= 1 {
+    let can_slice_mask = clip.is_none_or(|mask| {
+        mask.width() == width && mask.height() >= y_offset.saturating_add(height)
+    });
+    if workers <= 1 || !can_slice_mask {
         if let Some(mut pixmap) = tiny_skia::PixmapMut::from_bytes(data, width, height) {
             let band_transform = if y_offset == 0 {
                 transform
             } else {
                 transform.post_translate(0.0, -(y_offset as f32))
             };
-            pixmap.draw_pixmap(0, 0, source, paint, band_transform, None);
+            pixmap.draw_pixmap(0, 0, source, paint, band_transform, clip);
         }
         return;
     }
     let row_bytes = width as usize * 4;
+    let mask_row_bytes = width as usize;
     let rows_per = (height as usize).div_ceil(workers);
+    let mask_data = clip.map(Mask::data);
     std::thread::scope(|scope| {
         for (index, chunk) in data.chunks_mut(rows_per * row_bytes).enumerate() {
             let strip_y = y_offset + (index * rows_per) as u32;
             let strip_height = (chunk.len() / row_bytes) as u32;
+            let mask_slice = mask_data.map(|mask_data| {
+                let start = strip_y as usize * mask_row_bytes;
+                &mask_data[start..start + strip_height as usize * mask_row_bytes]
+            });
             scope.spawn(move || {
-                if let Some(mut strip) =
-                    tiny_skia::PixmapMut::from_bytes(chunk, width, strip_height)
-                {
-                    strip.draw_pixmap(
-                        0,
-                        0,
-                        source,
-                        paint,
-                        transform.post_translate(0.0, -(strip_y as f32)),
-                        None,
-                    );
-                }
+                let Some(mut strip) = tiny_skia::PixmapMut::from_bytes(chunk, width, strip_height)
+                else {
+                    return;
+                };
+                let strip_mask = match mask_slice {
+                    Some(slice) => {
+                        let Some(size) = IntSize::from_wh(width, strip_height) else {
+                            return;
+                        };
+                        let Some(mask) = Mask::from_vec(slice.to_vec(), size) else {
+                            return;
+                        };
+                        Some(mask)
+                    }
+                    None => None,
+                };
+                strip.draw_pixmap(
+                    0,
+                    0,
+                    source,
+                    paint,
+                    transform.post_translate(0.0, -(strip_y as f32)),
+                    strip_mask.as_ref(),
+                );
             });
         }
     });
@@ -1515,6 +1553,61 @@ mod tests {
             Color::from_rgba8(0, 0, 0, 255),
         );
         assert_eq!(alpha_at(&canvas, 2, 2), 255);
+    }
+
+    #[test]
+    fn parallel_clipped_draw_pixmap_matches_single_threaded_tiny_skia() {
+        let (width, height) = (640, 480);
+        let mut source = Pixmap::new(320, 240).expect("source");
+        for (index, pixel) in source
+            .data_mut()
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .enumerate()
+        {
+            *pixel = [
+                ((index * 7) % 256) as u8,
+                ((index * 13) % 256) as u8,
+                ((index * 29) % 256) as u8,
+                255,
+            ];
+        }
+        let clip_path = rounded_rect_path(24.0, 18.0, 592.0, 444.0, 36.0).expect("clip");
+        let mut mask = Mask::new(width, height).expect("mask");
+        mask.fill_path(&clip_path, FillRule::Winding, true, Transform::identity());
+        let paint = PixmapPaint {
+            opacity: 1.0,
+            blend_mode: BlendMode::SourceOver,
+            quality: FilterQuality::Bilinear,
+        };
+        let transform =
+            Transform::from_translate(24.0, 18.0).pre_scale(592.0 / 320.0, 444.0 / 240.0);
+
+        let mut expected = Pixmap::new(width, height).expect("expected");
+        expected.fill(Color::from_rgba8(18, 28, 42, 255));
+        expected.draw_pixmap(0, 0, source.as_ref(), &paint, transform, Some(&mask));
+
+        let mut actual = Pixmap::new(width, height).expect("actual");
+        actual.fill(Color::from_rgba8(18, 28, 42, 255));
+        draw_pixmap_parallel(&mut actual, source.as_ref(), &paint, transform, Some(&mask));
+
+        let mut max_diff = 0u8;
+        let mut first_diff = None;
+        for (index, (a, e)) in actual.data().iter().zip(expected.data()).enumerate() {
+            let diff = a.abs_diff(*e);
+            if diff > 0 && first_diff.is_none() {
+                first_diff = Some((
+                    index / 4 % width as usize,
+                    index / 4 / width as usize,
+                    index % 4,
+                    *a,
+                    *e,
+                ));
+            }
+            max_diff = max_diff.max(diff);
+        }
+        assert!(max_diff <= 1, "first_diff={first_diff:?}");
     }
 
     #[test]

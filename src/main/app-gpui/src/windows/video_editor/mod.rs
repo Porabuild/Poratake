@@ -222,6 +222,7 @@ pub struct VideoEditorWindow {
     uploaded_url: Option<String>,
     drawing_tools: styles::DrawingToolSettings,
     drawing_stroke: Option<drawing_overlay::Stroke>,
+    draft_redact_preview: Option<drawing_paint::RedactPreview>,
     timeline_id_seed: u64,
     drawing_text_field: Entity<herogpui::components::InputState>,
     preview_bounds: drawing_overlay::BoundsCell,
@@ -486,6 +487,7 @@ impl VideoEditorWindow {
             uploaded_url: None,
             drawing_tools: styles::DrawingToolSettings::default(),
             drawing_stroke: None,
+            draft_redact_preview: None,
             timeline_id_seed: 0,
             drawing_text_field: cx.new(|cx| herogpui::components::InputState::new(cx)),
             preview_bounds: Rc::new(RefCell::new(None)),
@@ -880,6 +882,8 @@ impl VideoEditorWindow {
                         }
                         this.has_system_audio = has_system_audio;
                         this.composition_size = Some(source.composition_size());
+                        this.preview_quality = INITIAL_PREVIEW_QUALITY;
+                        this.preview_fast_frames = 0;
                         this.source = Some(Arc::new(parking_lot::Mutex::new(source)));
                         this.adopt_source_duration(duration, cx);
                         this.preview_status = PreviewStatus::Ready;
@@ -1128,6 +1132,7 @@ impl VideoEditorWindow {
                         if let Some(previous) = this.preview_image.replace(image) {
                             cx.drop_image(previous, None);
                         }
+                        this.refresh_draft_redact_preview(cx);
                     }
                     cx.notify();
                 }
@@ -1428,6 +1433,9 @@ impl VideoEditorWindow {
                     if saved {
                         if let Some(image) = editor.preview_image.take() {
                             let _ = window.drop_image(image);
+                        }
+                        if let Some(preview) = editor.draft_redact_preview.take() {
+                            let _ = window.drop_image(preview.image);
                         }
                         editor.source = None;
                         editor.preview_audio = crate::video::preview_audio::PreviewAudio::new();
@@ -3312,6 +3320,7 @@ impl VideoEditorWindow {
             return;
         }
         self.drawing_stroke = drawing_overlay::Stroke::begin(&tools, point, id);
+        self.refresh_draft_redact_preview(cx);
         cx.notify();
     }
 
@@ -3331,6 +3340,7 @@ impl VideoEditorWindow {
         if let Some(stroke) = self.drawing_stroke.as_mut() {
             stroke.update(&tools, point, shift);
         }
+        self.refresh_draft_redact_preview(cx);
         cx.notify();
     }
 
@@ -3338,11 +3348,36 @@ impl VideoEditorWindow {
         let Some(stroke) = self.drawing_stroke.take() else {
             return;
         };
+        self.refresh_draft_redact_preview(cx);
         let Some(annotation) = stroke.finish() else {
             cx.notify();
             return;
         };
         self.add_drawing_annotation(annotation, cx);
+    }
+
+    fn refresh_draft_redact_preview(&mut self, cx: &mut Context<Self>) {
+        let next = match (
+            self.preview_image.as_deref(),
+            self.composition_size,
+            self.drawing_stroke
+                .as_ref()
+                .and_then(drawing_overlay::Stroke::draft),
+        ) {
+            (Some(preview), Some(composition), Some(draft)) => {
+                let key = drawing_paint::redact_preview_key(preview, composition, draft);
+                if key.is_some()
+                    && self.draft_redact_preview.as_ref().map(|cached| &cached.key) == key.as_ref()
+                {
+                    return;
+                }
+                drawing_paint::build_redact_preview(preview, composition, draft)
+            }
+            _ => None,
+        };
+        if let Some(previous) = std::mem::replace(&mut self.draft_redact_preview, next) {
+            cx.drop_image(previous.image, None);
+        }
     }
 
     fn add_drawing_annotation(&mut self, annotation: Annotation, cx: &mut Context<Self>) {
@@ -3933,6 +3968,7 @@ impl Drop for VideoEditorWindow {
         let saved = self.flush_pending_state();
         self.source = None;
         self.preview_image = None;
+        self.draft_redact_preview = None;
         if let Some(session) = self.music_session.take() {
             if saved {
                 let _ = session.close();
@@ -8080,23 +8116,23 @@ mod keyboard_demo_tests {
         let budget = active_preview_budget(60.0);
         assert_eq!(
             adjust_preview_quality(
-                3,
+                INITIAL_PREVIEW_QUALITY,
                 0,
                 budget + Duration::from_millis(1),
                 Duration::ZERO,
                 budget
             ),
-            (2, 0)
+            (INITIAL_PREVIEW_QUALITY - 1, 0)
         );
         assert_eq!(
             adjust_preview_quality(
-                2,
+                INITIAL_PREVIEW_QUALITY - 1,
                 PREVIEW_QUALITY_RAISE_FRAMES - 1,
                 Duration::from_millis(1),
                 Duration::ZERO,
                 budget
             ),
-            (3, 0)
+            (INITIAL_PREVIEW_QUALITY, 0)
         );
         assert_eq!(
             adjust_preview_quality(
@@ -8109,7 +8145,7 @@ mod keyboard_demo_tests {
             (0, 0)
         );
         assert!(
-            active_preview_budget(30.0).abs_diff(Duration::from_secs_f64(1.0 / 60.0))
+            active_preview_budget(30.0).abs_diff(Duration::from_secs_f64(0.75 / 30.0))
                 <= Duration::from_nanos(1)
         );
     }
@@ -8117,25 +8153,48 @@ mod keyboard_demo_tests {
     #[test]
     fn a_slow_decode_does_not_lower_quality_when_composition_fits() {
         let budget = active_preview_budget(60.0);
-        let decode = Duration::from_millis(1500);
+        let slow_decode = Duration::from_millis(1500);
+        let sub_budget_decode = budget.mul_f32(0.7);
         let render = Duration::from_millis(4);
         assert_eq!(
             adjust_preview_quality(
-                3,
+                INITIAL_PREVIEW_QUALITY - 1,
                 PREVIEW_QUALITY_RAISE_FRAMES - 1,
-                decode + render,
-                decode,
+                slow_decode + render,
+                slow_decode,
                 budget
             ),
-            (3, 0)
+            (INITIAL_PREVIEW_QUALITY, 0)
         );
         assert_eq!(
-            adjust_preview_quality(3, 0, decode + budget + render, decode, budget),
-            (2, 0)
+            adjust_preview_quality(
+                INITIAL_PREVIEW_QUALITY,
+                0,
+                sub_budget_decode + render,
+                sub_budget_decode,
+                budget
+            ),
+            (INITIAL_PREVIEW_QUALITY, 1)
         );
         assert_eq!(
-            adjust_preview_quality(3, 0, budget + render, render, budget),
-            (2, 0)
+            adjust_preview_quality(
+                INITIAL_PREVIEW_QUALITY - 1,
+                PREVIEW_QUALITY_RAISE_FRAMES - 1,
+                sub_budget_decode + render,
+                sub_budget_decode,
+                budget
+            ),
+            (INITIAL_PREVIEW_QUALITY, 0)
+        );
+        assert_eq!(
+            adjust_preview_quality(
+                INITIAL_PREVIEW_QUALITY,
+                0,
+                slow_decode + budget + render,
+                slow_decode,
+                budget
+            ),
+            (INITIAL_PREVIEW_QUALITY - 1, 0)
         );
     }
 

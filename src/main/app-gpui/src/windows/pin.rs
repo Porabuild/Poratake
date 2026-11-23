@@ -11,7 +11,6 @@ use crate::ui::chrome;
 
 pub struct PinWindow {
     image: Arc<gpui::RenderImage>,
-    image_size: gpui::Size<gpui::Pixels>,
     restore: Option<(String, crate::editor::window::PersistedEditorState)>,
     hovered: bool,
 }
@@ -102,6 +101,7 @@ impl PinWindow {
             .unwrap_or((0.0, 0.0, 1920.0, 1080.0));
         let (window_width, window_height) =
             chrome::pin_window_size(width, height, work_width, work_height);
+        let aspect_ratio = chrome::pin_window_aspect_ratio(width, height, work_width, work_height);
         let existing = cx
             .windows()
             .iter()
@@ -124,13 +124,25 @@ impl PinWindow {
                 ..Default::default()
             },
         );
-        options.window_min_size = Some(size(px(chrome::PIN_MIN_SIZE), px(chrome::PIN_MIN_SIZE)));
+        options.window_min_size = Some(size(
+            px(chrome::PIN_MIN_SIZE.min(work_width)),
+            px(chrome::PIN_MIN_SIZE.min(work_height)),
+        ));
         cx.open_window(options, |window, cx| {
             window.set_window_title("Poratake pinned screenshot");
             crate::system::native::register_dock_window(window.window_handle().window_id(), cx);
+            #[cfg(all(target_os = "macos", not(test)))]
+            if let Some((ratio_w, ratio_h)) = aspect_ratio {
+                super::set_macos_window_aspect_ratio(window, ratio_w, ratio_h);
+            }
+            #[cfg(all(windows, not(test)))]
+            if let Some((ratio_w, ratio_h)) = aspect_ratio {
+                install_windows_aspect_ratio(window, f64::from(ratio_w) / f64::from(ratio_h));
+            }
+            #[cfg(not(any(all(target_os = "macos", not(test)), all(windows, not(test)))))]
+            let _ = aspect_ratio;
             let view = cx.new(|_| Self {
                 image: render_image.clone(),
-                image_size: size(px(width), px(height)),
                 restore,
                 hovered: false,
             });
@@ -182,12 +194,19 @@ impl Render for PinWindow {
             .justify_center()
             .child(
                 img(self.image.clone())
-                    .w(self.image_size.width)
-                    .h(self.image_size.height)
-                    .max_w_full()
-                    .max_h_full()
+                    .size_full()
                     .object_fit(gpui::ObjectFit::Contain),
             );
+        #[cfg(not(windows))]
+        let image = image.on_mouse_down(gpui::MouseButton::Left, |event, window, cx| {
+            if event.click_count != 1 {
+                return;
+            }
+            window.start_window_move();
+            cx.stop_propagation();
+        });
+        #[cfg(target_os = "linux")]
+        let image = image.children(linux_resize_handles());
         let content = crate::ui::font::root()
             .size_full()
             .relative()
@@ -225,13 +244,308 @@ impl Render for PinWindow {
                         .cursor_pointer()
                         .on_mouse_down(
                             gpui::MouseButton::Left,
-                            cx.listener(|this, _, window, cx| this.close(window, cx)),
+                            cx.listener(|this, _, window, cx| {
+                                cx.stop_propagation();
+                                this.close(window, cx);
+                            }),
                         )
                         .child(crate::ui::icon::icon_element("x", px(14.0))),
                 )
             });
         crate::ui::window_root::focus_root(content, window, cx)
     }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_resize_handles() -> [gpui::AnyElement; 8] {
+    use gpui::{CursorStyle, ResizeEdge};
+
+    const EDGE: f32 = 6.0;
+    const CORNER: f32 = 10.0;
+    let handle = |id: &'static str, edge: ResizeEdge, cursor: CursorStyle| {
+        div().id(id).absolute().cursor(cursor).on_mouse_down(
+            gpui::MouseButton::Left,
+            move |event, window, cx| {
+                if event.click_count != 1 {
+                    return;
+                }
+                window.start_window_resize(edge);
+                cx.stop_propagation();
+            },
+        )
+    };
+    [
+        handle("pin-resize-top", ResizeEdge::Top, CursorStyle::ResizeUpDown)
+            .top_0()
+            .left(px(CORNER))
+            .right(px(CORNER))
+            .h(px(EDGE))
+            .into_any_element(),
+        handle(
+            "pin-resize-bottom",
+            ResizeEdge::Bottom,
+            CursorStyle::ResizeUpDown,
+        )
+        .bottom_0()
+        .left(px(CORNER))
+        .right(px(CORNER))
+        .h(px(EDGE))
+        .into_any_element(),
+        handle(
+            "pin-resize-left",
+            ResizeEdge::Left,
+            CursorStyle::ResizeLeftRight,
+        )
+        .left_0()
+        .top(px(CORNER))
+        .bottom(px(CORNER))
+        .w(px(EDGE))
+        .into_any_element(),
+        handle(
+            "pin-resize-right",
+            ResizeEdge::Right,
+            CursorStyle::ResizeLeftRight,
+        )
+        .right_0()
+        .top(px(CORNER))
+        .bottom(px(CORNER))
+        .w(px(EDGE))
+        .into_any_element(),
+        handle(
+            "pin-resize-top-left",
+            ResizeEdge::TopLeft,
+            CursorStyle::ResizeUpLeftDownRight,
+        )
+        .top_0()
+        .left_0()
+        .w(px(CORNER))
+        .h(px(CORNER))
+        .into_any_element(),
+        handle(
+            "pin-resize-top-right",
+            ResizeEdge::TopRight,
+            CursorStyle::ResizeUpRightDownLeft,
+        )
+        .top_0()
+        .right_0()
+        .w(px(CORNER))
+        .h(px(CORNER))
+        .into_any_element(),
+        handle(
+            "pin-resize-bottom-left",
+            ResizeEdge::BottomLeft,
+            CursorStyle::ResizeUpRightDownLeft,
+        )
+        .bottom_0()
+        .left_0()
+        .w(px(CORNER))
+        .h(px(CORNER))
+        .into_any_element(),
+        handle(
+            "pin-resize-bottom-right",
+            ResizeEdge::BottomRight,
+            CursorStyle::ResizeUpLeftDownRight,
+        )
+        .bottom_0()
+        .right_0()
+        .w(px(CORNER))
+        .h(px(CORNER))
+        .into_any_element(),
+    ]
+}
+
+#[cfg(any(windows, test))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ResizeRect {
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+}
+
+#[cfg(any(windows, test))]
+const RESIZE_EDGE_LEFT: u32 = 1;
+#[cfg(any(windows, test))]
+const RESIZE_EDGE_RIGHT: u32 = 2;
+#[cfg(any(windows, test))]
+const RESIZE_EDGE_TOP: u32 = 3;
+#[cfg(any(windows, test))]
+const RESIZE_EDGE_TOP_LEFT: u32 = 4;
+#[cfg(any(windows, test))]
+const RESIZE_EDGE_TOP_RIGHT: u32 = 5;
+#[cfg(any(windows, test))]
+const RESIZE_EDGE_BOTTOM: u32 = 6;
+#[cfg(any(windows, test))]
+const RESIZE_EDGE_BOTTOM_LEFT: u32 = 7;
+#[cfg(any(windows, test))]
+const RESIZE_EDGE_BOTTOM_RIGHT: u32 = 8;
+
+#[cfg(any(windows, test))]
+fn constrain_resize_rect(
+    mut rect: ResizeRect,
+    edge: u32,
+    border_w: i32,
+    border_h: i32,
+    aspect: f64,
+    min_client: i32,
+) -> ResizeRect {
+    if !aspect.is_finite() || aspect <= 0.0 {
+        return rect;
+    }
+    let min_side = min_client.max(1);
+    let min_w = min_side.max((f64::from(min_side) * aspect).ceil() as i32);
+    let min_h = min_side.max((f64::from(min_side) / aspect).ceil() as i32);
+    let cw = (rect.right - rect.left - border_w).max(min_w);
+    let ch = (rect.bottom - rect.top - border_h).max(min_h);
+
+    match edge {
+        RESIZE_EDGE_LEFT => {
+            let new_h = ((f64::from(cw) / aspect).round() as i32).max(min_h);
+            rect.left = rect.right - (cw + border_w);
+            rect.bottom = rect.top + (new_h + border_h);
+        }
+        RESIZE_EDGE_RIGHT => {
+            let new_h = ((f64::from(cw) / aspect).round() as i32).max(min_h);
+            rect.right = rect.left + (cw + border_w);
+            rect.bottom = rect.top + (new_h + border_h);
+        }
+        RESIZE_EDGE_TOP => {
+            let new_w = ((f64::from(ch) * aspect).round() as i32).max(min_w);
+            rect.top = rect.bottom - (ch + border_h);
+            rect.right = rect.left + (new_w + border_w);
+        }
+        RESIZE_EDGE_BOTTOM => {
+            let new_w = ((f64::from(ch) * aspect).round() as i32).max(min_w);
+            rect.bottom = rect.top + (ch + border_h);
+            rect.right = rect.left + (new_w + border_w);
+        }
+        RESIZE_EDGE_TOP_LEFT
+        | RESIZE_EDGE_TOP_RIGHT
+        | RESIZE_EDGE_BOTTOM_LEFT
+        | RESIZE_EDGE_BOTTOM_RIGHT => {
+            let (new_w, new_h) = if f64::from(cw) / aspect >= f64::from(ch) {
+                (cw, ((f64::from(cw) / aspect).round() as i32).max(min_h))
+            } else {
+                (((f64::from(ch) * aspect).round() as i32).max(min_w), ch)
+            };
+            match edge {
+                RESIZE_EDGE_TOP_LEFT => {
+                    rect.left = rect.right - (new_w + border_w);
+                    rect.top = rect.bottom - (new_h + border_h);
+                }
+                RESIZE_EDGE_TOP_RIGHT => {
+                    rect.right = rect.left + (new_w + border_w);
+                    rect.top = rect.bottom - (new_h + border_h);
+                }
+                RESIZE_EDGE_BOTTOM_LEFT => {
+                    rect.left = rect.right - (new_w + border_w);
+                    rect.bottom = rect.top + (new_h + border_h);
+                }
+                _ => {
+                    rect.right = rect.left + (new_w + border_w);
+                    rect.bottom = rect.top + (new_h + border_h);
+                }
+            }
+        }
+        _ => {}
+    }
+
+    rect
+}
+
+#[cfg(all(windows, not(test)))]
+const PIN_ASPECT_SUBCLASS_ID: usize = 0x5049_4E41;
+
+#[cfg(all(windows, not(test)))]
+fn install_windows_aspect_ratio(window: &Window, aspect: f64) {
+    use windows::Win32::UI::Shell::SetWindowSubclass;
+
+    if !aspect.is_finite() || aspect <= 0.0 {
+        return;
+    }
+    let Some(hwnd) = super::window_hwnd(window) else {
+        return;
+    };
+    let boxed = Box::into_raw(Box::new(aspect));
+    let installed = unsafe {
+        SetWindowSubclass(
+            hwnd,
+            Some(pin_aspect_subclass),
+            PIN_ASPECT_SUBCLASS_ID,
+            boxed as usize,
+        )
+    };
+    if !installed.as_bool() {
+        drop(unsafe { Box::from_raw(boxed) });
+    }
+}
+
+#[cfg(all(windows, not(test)))]
+unsafe extern "system" fn pin_aspect_subclass(
+    hwnd: windows::Win32::Foundation::HWND,
+    msg: u32,
+    wparam: windows::Win32::Foundation::WPARAM,
+    lparam: windows::Win32::Foundation::LPARAM,
+    uidsubclass: usize,
+    dwrefdata: usize,
+) -> windows::Win32::Foundation::LRESULT {
+    use windows::Win32::Foundation::{LRESULT, RECT};
+    use windows::Win32::UI::HiDpi::GetDpiForWindow;
+    use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetClientRect, GetWindowRect, WM_NCDESTROY, WM_SIZING,
+    };
+
+    if msg == WM_NCDESTROY {
+        let _ = unsafe { RemoveWindowSubclass(hwnd, Some(pin_aspect_subclass), uidsubclass) };
+        if dwrefdata != 0 {
+            drop(unsafe { Box::from_raw(dwrefdata as *mut f64) });
+        }
+        return unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) };
+    }
+
+    if msg == WM_SIZING && dwrefdata != 0 && lparam.0 != 0 {
+        let aspect = unsafe { *(dwrefdata as *const f64) };
+        let mut window_rect = RECT::default();
+        let mut client_rect = RECT::default();
+        let (border_w, border_h) = if unsafe {
+            GetWindowRect(hwnd, &mut window_rect).is_ok()
+                && GetClientRect(hwnd, &mut client_rect).is_ok()
+        } {
+            (
+                (window_rect.right - window_rect.left) - (client_rect.right - client_rect.left),
+                (window_rect.bottom - window_rect.top) - (client_rect.bottom - client_rect.top),
+            )
+        } else {
+            (0, 0)
+        };
+        let dpi = unsafe { GetDpiForWindow(hwnd) }.max(96);
+        let min_client = (chrome::PIN_MIN_SIZE * dpi as f32 / 96.0).round() as i32;
+        let rect_ptr = lparam.0 as *mut RECT;
+        let current = unsafe { *rect_ptr };
+        let updated = constrain_resize_rect(
+            ResizeRect {
+                left: current.left,
+                top: current.top,
+                right: current.right,
+                bottom: current.bottom,
+            },
+            wparam.0 as u32,
+            border_w,
+            border_h,
+            aspect,
+            min_client,
+        );
+        unsafe {
+            (*rect_ptr).left = updated.left;
+            (*rect_ptr).top = updated.top;
+            (*rect_ptr).right = updated.right;
+            (*rect_ptr).bottom = updated.bottom;
+        }
+        return LRESULT(1);
+    }
+
+    unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
 }
 
 #[cfg(test)]
@@ -268,33 +582,105 @@ mod tests {
     }
 
     #[test]
-    fn pin_has_no_padded_chrome() {
+    fn pin_defaults_to_preview_size_at_top_right() {
         assert_eq!(chrome::PIN_PAD, 0.0);
-        assert_eq!(chrome::PIN_MIN_SIZE, 100.0);
+        assert_eq!(chrome::PIN_MIN_SIZE, 48.0);
         assert_eq!(chrome::PIN_OFFSET, 30.0);
-        let electron_scale = |image_w: f32, image_h: f32, work_w: f32, work_h: f32| {
-            1.0_f32
-                .min((work_w * 0.5) / image_w)
-                .min((work_h * 0.5) / image_h)
-        };
-        let scale = electron_scale(800.0, 600.0, 1920.0, 1080.0);
         assert_eq!(
             chrome::pin_window_size(800.0, 600.0, 1920.0, 1080.0),
-            ((800.0 * scale).floor(), (600.0 * scale).floor())
+            (186.0, 140.0)
         );
-        let scale = electron_scale(3000.0, 2000.0, 1920.0, 1080.0);
         assert_eq!(
             chrome::pin_window_size(3000.0, 2000.0, 1920.0, 1080.0),
-            ((3000.0 * scale).floor(), (2000.0 * scale).floor())
+            (200.0, 133.0)
         );
         assert_eq!(
-            chrome::pin_window_origin(400.0, 1920.0, 0),
-            (1920.0 - 400.0 - 20.0, 20.0)
+            chrome::pin_window_size(1920.0, 1080.0, 1920.0, 1080.0),
+            (200.0, 112.0)
         );
         assert_eq!(
-            chrome::pin_window_origin(400.0, 1920.0, 2),
-            (1920.0 - 400.0 - 20.0 - 60.0, 80.0)
+            chrome::pin_window_size(120.0, 80.0, 1920.0, 1080.0),
+            (120.0, 80.0)
         );
+        assert_eq!(
+            chrome::pin_window_origin(chrome::PREVIEW_WIDTH, 1920.0, 0),
+            chrome::preview_origin(0.0, 0.0, 1920.0, 1080.0, 0, chrome::PreviewCorner::TopRight)
+        );
+        assert_eq!(
+            chrome::pin_window_origin(200.0, 1920.0, 2),
+            (
+                1920.0 - 200.0 - chrome::PREVIEW_MARGIN - 60.0,
+                chrome::PREVIEW_MARGIN + 60.0
+            )
+        );
+        assert_eq!(
+            chrome::pin_window_aspect_ratio(1920.0, 1080.0, 1920.0, 1080.0),
+            Some((1920.0, 1080.0))
+        );
+        assert_eq!(
+            chrome::pin_window_aspect_ratio(1000.0, 10.0, 1920.0, 1080.0),
+            None
+        );
+    }
+
+    #[test]
+    fn constrain_resize_rect_preserves_aspect_ratio_and_anchors_opposite_edge() {
+        let aspect = 16.0 / 9.0;
+        let border_w = 16;
+        let border_h = 8;
+        let right = constrain_resize_rect(
+            ResizeRect {
+                left: 100,
+                top: 100,
+                right: 100 + 320 + border_w,
+                bottom: 100 + 112 + border_h,
+            },
+            RESIZE_EDGE_RIGHT,
+            border_w,
+            border_h,
+            aspect,
+            48,
+        );
+        assert_eq!(right.left, 100);
+        assert_eq!(right.top, 100);
+        assert_eq!(right.right - right.left - border_w, 320);
+        assert_eq!(right.bottom - right.top - border_h, 180);
+
+        let top_left = constrain_resize_rect(
+            ResizeRect {
+                left: 100,
+                top: 100,
+                right: 500 + border_w,
+                bottom: 300 + border_h,
+            },
+            RESIZE_EDGE_TOP_LEFT,
+            border_w,
+            border_h,
+            aspect,
+            48,
+        );
+        assert_eq!(top_left.right, 500 + border_w);
+        assert_eq!(top_left.bottom, 300 + border_h);
+        assert_eq!(top_left.right - top_left.left - border_w, 400);
+        assert_eq!(top_left.bottom - top_left.top - border_h, 225);
+
+        let min_clamped = constrain_resize_rect(
+            ResizeRect {
+                left: 100,
+                top: 100,
+                right: 120 + border_w,
+                bottom: 120 + border_h,
+            },
+            RESIZE_EDGE_BOTTOM_RIGHT,
+            border_w,
+            border_h,
+            aspect,
+            48,
+        );
+        assert_eq!(min_clamped.left, 100);
+        assert_eq!(min_clamped.top, 100);
+        assert_eq!(min_clamped.right - min_clamped.left - border_w, 86);
+        assert_eq!(min_clamped.bottom - min_clamped.top - border_h, 48);
     }
 
     #[herogpui::test]

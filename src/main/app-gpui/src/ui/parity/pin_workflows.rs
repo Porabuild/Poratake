@@ -44,8 +44,7 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
         settle(cx, pin);
         capture(cx, pin, output, &format!("pin-{name}"));
         let fit = (f32::from(viewport.width) / f32::from(natural.width))
-            .min(f32::from(viewport.height) / f32::from(natural.height))
-            .min(1.);
+            .min(f32::from(viewport.height) / f32::from(natural.height));
         let image_width = f32::from(natural.width) * fit;
         let image_height = f32::from(natural.height) * fit;
         let left = (f32::from(viewport.width) - image_width) * 0.5 * scale;
@@ -79,7 +78,7 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
         assert!(inside_blue > 0, "pin-{name}: fixture image must be visible; outside={outside_blue}, natural={natural:?}, viewport={viewport:?}");
         assert_eq!(
             outside_blue, 0,
-            "pin-{name}: image must stay centered and fit without upscaling"
+            "pin-{name}: image must stay centered and fit proportionally"
         );
         let close = measured("pin-controls", 1);
         assert!(close.left() >= px(0.) && close.top() >= px(0.));

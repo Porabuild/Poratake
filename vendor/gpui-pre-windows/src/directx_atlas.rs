@@ -2,8 +2,8 @@ use etagere::BucketedAtlasAllocator;
 use parking_lot::Mutex;
 use windows::Win32::Graphics::{
     Direct3D11::{
-        D3D11_BIND_SHADER_RESOURCE, D3D11_BOX, D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT,
         ID3D11Device, ID3D11DeviceContext, ID3D11ShaderResourceView, ID3D11Texture2D,
+        D3D11_BIND_SHADER_RESOURCE, D3D11_BOX, D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT,
     },
     Dxgi::Common::*,
 };
@@ -162,8 +162,8 @@ impl DirectXAtlasTextures {
         kind: AtlasTextureKind,
     ) -> Option<&mut DirectXAtlasTexture> {
         const DEFAULT_ATLAS_SIZE: Size<DevicePixels> = Size {
-            width: DevicePixels(1024),
-            height: DevicePixels(1024),
+            width: DevicePixels(512),
+            height: DevicePixels(512),
         };
         // Max texture size for DirectX. See:
         // https://learn.microsoft.com/en-us/windows/win32/direct3d11/overviews-direct3d-11-resources-limits
@@ -348,7 +348,7 @@ mod tests {
         Foundation::HMODULE,
         Graphics::{
             Direct3D::D3D_DRIVER_TYPE_WARP,
-            Direct3D11::{D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_SDK_VERSION, D3D11CreateDevice},
+            Direct3D11::{D3D11CreateDevice, D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_SDK_VERSION},
         },
     };
 
@@ -400,8 +400,8 @@ mod tests {
             height: DevicePixels(64),
         };
         let big = Size {
-            width: DevicePixels(700),
-            height: DevicePixels(700),
+            width: DevicePixels(350),
+            height: DevicePixels(350),
         };
 
         let keeper_key = make_image_key(1);
