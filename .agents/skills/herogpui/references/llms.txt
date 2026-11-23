@@ -28,7 +28,7 @@ The previous major version used different names, and they do not exist here:
 
 ```toml
 [dependencies]
-herogpui = "0.15.3"
+herogpui = "0.15.4"
 ```
 
 One dependency, and only one, published on crates.io (`cargo add herogpui`). `herogpui` is a facade over the GPUI crate
