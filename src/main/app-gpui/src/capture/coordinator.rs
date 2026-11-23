@@ -467,6 +467,7 @@ async fn finalize_capture(path: std::path::PathBuf, silent: bool, cx: &mut gpui:
                 let coordinator = crate::state::coordinator(cx);
                 if coordinator.read(cx).clipboard_generation == generation {
                     crate::system::clipboard::ClipboardService::write_png(cx, bytes);
+                    crate::system::memory::compact_heap();
                 }
             });
         }
