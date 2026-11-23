@@ -3351,7 +3351,18 @@ try {
             return $handle
         }
         return $null
-    } 10000 'Ctrl+S did not open the native Save Screenshot dialog.'
+    } 10000 ''
+    if (-not $saveDialog) {
+        $fg = Get-WindowIdentity ([PoratakeTooltipProbe]::GetForegroundWindow())
+        Write-Host ("DIAG foreground: " + ($fg | ConvertTo-Json -Compress))
+        $wins = @([PoratakeTooltipProbe]::Windows([uint32]$workflowApplication.Id) | ForEach-Object { Get-WindowIdentity $_ })
+        Write-Host ("DIAG workflow windows: " + ($wins | ConvertTo-Json -Compress))
+        if (Test-Path -LiteralPath $workflowStderrPath) {
+            Write-Host "DIAG workflow stderr:"
+            Get-Content -LiteralPath $workflowStderrPath | Write-Host
+        }
+        throw 'Ctrl+S did not open the native Save Screenshot dialog.'
+    }
     if ([PoratakeTooltipProbe]::GetWindow($saveDialog, 4) -ne $editorHandle) { throw 'The Save Screenshot dialog is not owned by the screenshot editor.' }
     if (-not [PoratakeTooltipProbe]::SetForegroundWindow($saveDialog)) { throw 'Could not foreground the owned Save Screenshot dialog.' }
     Wait-Until {
