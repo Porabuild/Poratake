@@ -2747,7 +2747,7 @@ impl EditorWindow {
     }
 
     fn finish_active_transform(&mut self, cx: &mut Context<Self>) {
-        if self.move_origin.is_some() || self.resize_state.is_some() {
+        if self.move_origin.is_some() || self.resize_state.is_some() || self.crop_drag.is_some() {
             self.apply_pending_pointer_update(cx);
             self.finish_stroke(cx);
         }
@@ -2819,6 +2819,13 @@ impl EditorWindow {
                 annotations.push(draft);
                 self.push_annotations(annotations, cx);
                 self.refresh_raster_patches();
+            }
+        }
+        if self.tool == Tool::Crop && self.drag_start.is_some() {
+            if let Some((_, _, width, height)) = self.crop {
+                if width.abs() < 2.0 || height.abs() < 2.0 {
+                    self.crop = None;
+                }
             }
         }
         self.drag_start = None;
@@ -3594,7 +3601,7 @@ impl Render for EditorWindow {
                                                 bounds,
                                                 editor.zoom,
                                             );
-                                            if event.click_count >= 2 {
+                                            if event.click_count >= 2 && editor.tool != Tool::Crop {
                                                 if let Some(id) = editor.text_annotation_at(point) {
                                                     editor.begin_text_reedit(&id, window, cx);
                                                     cx.notify();
@@ -3640,6 +3647,7 @@ impl Render for EditorWindow {
                                                 || editor.drag_start.is_some()
                                                 || editor.resize_state.is_some()
                                                 || editor.marquee.is_some()
+                                                || editor.crop_drag.is_some()
                                             {
                                                 let bounds = *editor.bounds.borrow();
                                                 let point =
@@ -3671,6 +3679,7 @@ impl Render for EditorWindow {
                                                 || editor.drag_start.is_some()
                                                 || editor.resize_state.is_some()
                                                 || editor.marquee.is_some()
+                                                || editor.crop_drag.is_some()
                                             {
                                                 let point = to_canvas_point(
                                                     event.position,
@@ -4532,6 +4541,10 @@ impl EditorWindow {
         self.commit_text(cx);
         if self.tool == Tool::Wallpaper {
             self.begin_sheet_close();
+        }
+        if self.tool == Tool::Crop {
+            self.crop = None;
+            self.crop_drag = None;
         }
         self.tool = tool;
         self.sync_snapshot(cx);
@@ -6931,6 +6944,133 @@ mod tests {
             200.0,
         );
         assert_eq!(rect, (90.0, 90.0, 20.0, 20.0));
+    }
+
+    #[herogpui::test]
+    fn crop_drag_creates_moves_and_resizes_via_pointer(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("crop-drag.png");
+        image::RgbaImage::from_pixel(300, 200, image::Rgba([60, 80, 100, 255]))
+            .save(&source)
+            .unwrap();
+        let store = Arc::new(
+            crate::config::store::ConfigStore::load_at(directory.path().join("config.json"))
+                .unwrap(),
+        );
+        cx.update(|cx| crate::state::set_test_state(cx, store));
+        let source_path = source.to_string_lossy().into_owned();
+        let (editor, cx) = herogpui::test::open_window(cx, |window, cx| {
+            let mut editor = EditorWindow::from_file(&source_path, window, cx);
+            editor.file_path.clear();
+            editor.set_tool(Tool::Crop, cx);
+            editor.set_zoom(1.0, cx);
+            editor
+        });
+        cx.settle();
+
+        let (origin, zoom) = cx.update(|_, cx| {
+            let state = editor.read(cx);
+            (
+                state
+                    .bounds
+                    .borrow()
+                    .expect("canvas bounds recorded")
+                    .origin,
+                state.zoom,
+            )
+        });
+        let at = |x: f32, y: f32| gpui::point(origin.x + px(x * zoom), origin.y + px(y * zoom));
+
+        cx.simulate_mouse_down(
+            at(20.0, 20.0),
+            gpui::MouseButton::Left,
+            gpui::Modifiers::none(),
+        );
+        cx.simulate_mouse_move(
+            at(120.0, 100.0),
+            Some(gpui::MouseButton::Left),
+            gpui::Modifiers::none(),
+        );
+        cx.simulate_mouse_up(
+            at(120.0, 100.0),
+            gpui::MouseButton::Left,
+            gpui::Modifiers::none(),
+        );
+        cx.settle();
+        let created = cx.update(|_, cx| editor.read(cx).crop);
+        assert_eq!(created, Some((20.0, 20.0, 100.0, 80.0)));
+
+        cx.simulate_mouse_down(
+            at(70.0, 60.0),
+            gpui::MouseButton::Left,
+            gpui::Modifiers::none(),
+        );
+        cx.simulate_mouse_move(
+            at(100.0, 85.0),
+            Some(gpui::MouseButton::Left),
+            gpui::Modifiers::none(),
+        );
+        cx.simulate_mouse_up(
+            at(100.0, 85.0),
+            gpui::MouseButton::Left,
+            gpui::Modifiers::none(),
+        );
+        cx.settle();
+        let moved = cx.update(|_, cx| editor.read(cx).crop);
+        assert_eq!(moved, Some((50.0, 45.0, 100.0, 80.0)));
+
+        cx.simulate_mouse_down(
+            at(150.0, 125.0),
+            gpui::MouseButton::Left,
+            gpui::Modifiers::none(),
+        );
+        cx.simulate_mouse_move(
+            at(200.0, 155.0),
+            Some(gpui::MouseButton::Left),
+            gpui::Modifiers::none(),
+        );
+        cx.simulate_mouse_up(
+            at(200.0, 155.0),
+            gpui::MouseButton::Left,
+            gpui::Modifiers::none(),
+        );
+        cx.settle();
+        let resized = cx.update(|_, cx| editor.read(cx).crop);
+        assert_eq!(resized, Some((50.0, 45.0, 150.0, 110.0)));
+
+        cx.simulate_mouse_down(
+            at(5.0, 5.0),
+            gpui::MouseButton::Left,
+            gpui::Modifiers::none(),
+        );
+        cx.simulate_mouse_up(
+            at(5.0, 5.0),
+            gpui::MouseButton::Left,
+            gpui::Modifiers::none(),
+        );
+        cx.settle();
+        let dismissed = cx.update(|_, cx| editor.read(cx).crop);
+        assert_eq!(dismissed, None);
+
+        cx.simulate_mouse_down(
+            at(30.0, 30.0),
+            gpui::MouseButton::Left,
+            gpui::Modifiers::none(),
+        );
+        cx.simulate_mouse_move(
+            at(110.0, 90.0),
+            Some(gpui::MouseButton::Left),
+            gpui::Modifiers::none(),
+        );
+        cx.simulate_mouse_up(
+            at(110.0, 90.0),
+            gpui::MouseButton::Left,
+            gpui::Modifiers::none(),
+        );
+        cx.settle();
+        assert!(cx.update(|_, cx| editor.read(cx).crop.is_some()));
+        cx.update(|_, cx| editor.update(cx, |e, cx| e.set_tool(Tool::Pen, cx)));
+        assert_eq!(cx.update(|_, cx| editor.read(cx).crop), None);
     }
 
     #[test]
