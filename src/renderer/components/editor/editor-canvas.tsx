@@ -558,6 +558,7 @@ const EditorCanvas = forwardRef<EditorCanvasHandle, EditorCanvasProps>(
                 offsetY={contentOffsetY}
                 imageWidth={contentWidth}
                 imageHeight={contentHeight}
+                zoom={zoom}
               />
             )}
 

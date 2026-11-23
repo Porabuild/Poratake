@@ -381,11 +381,6 @@ impl RenderOnce for EditorCanvas {
             );
         }
 
-        if let Some((x, y, width, height)) = self.snapshot.borrow().crop {
-            let zoom = self.snapshot.borrow().zoom;
-            decorations = decorations.child(crop_overlay(x, y, width, height, zoom, &theme));
-        }
-
         let mut decorations = Some(decorations);
         if !overlay_above {
             frame = frame.child(decorations.take().unwrap());
@@ -752,8 +747,22 @@ impl RenderOnce for EditorCanvas {
                         ),
                 );
             }
+            if let Some(crop) = self.snapshot.borrow().crop {
+                let stage_w = canvas_width as f32 * zoom;
+                let stage_h = canvas_height as f32 * zoom;
+                let origin = (
+                    (offset_x as f32 - crop_left) * zoom,
+                    (offset_y as f32 + title_bar as f32 - crop_top) * zoom,
+                );
+                stage = stage.child(crop_overlay(crop, origin, (stage_w, stage_h), zoom));
+            }
             stage.into_any_element()
         } else {
+            if let Some(crop) = self.snapshot.borrow().crop {
+                let stage_w = image_width as f32 * zoom;
+                let stage_h = image_height as f32 * zoom;
+                frame = frame.child(crop_overlay(crop, (0.0, 0.0), (stage_w, stage_h), zoom));
+            }
             frame.into_any_element()
         };
 
@@ -2455,104 +2464,176 @@ fn selection_outlines(
         .collect()
 }
 
+const CROP_HANDLE_SIZE: f32 = 8.0;
+const CROP_HINT_GAP: f32 = 10.0;
+const CROP_HINT_HEIGHT: f32 = 28.0;
+const CROP_HINT_EST_WIDTH: f32 = 136.0;
+const CROP_HINT_EDGE_PAD: f32 = 8.0;
+const CROP_HINT_FONT_SIZE: f32 = crate::ui::chrome::TEXT_XS;
+
 /// Dims everything outside the pending crop and outlines the kept region,
 /// matching `svg-crop-overlay.tsx`.
 fn crop_overlay(
-    x: f64,
-    y: f64,
-    width: f64,
-    height: f64,
+    crop: (f64, f64, f64, f64),
+    origin: (f32, f32),
+    stage_size: (f32, f32),
     zoom: f32,
-    theme: &crate::theme::vars::ThemeVars,
 ) -> gpui::AnyElement {
+    let (x, y, width, height) = crop;
     let dim = crate::ui::colors::black(0.5);
+    let border = crate::ui::colors::white(0.85);
+    let handle_fill = crate::ui::colors::white(1.0);
+    let handle_border = crate::ui::colors::black(0.45);
     let (nx, ny, nw, nh) = (
         if width < 0.0 { x + width } else { x },
         if height < 0.0 { y + height } else { y },
         width.abs(),
         height.abs(),
     );
-    let (left, top) = (px(nx as f32 * zoom), px(ny as f32 * zoom));
-    let (w, h) = (px(nw as f32 * zoom), px(nh as f32 * zoom));
-    let handle = px(12.0);
-    let half_handle = px(6.0);
+    let left_f = origin.0 + nx as f32 * zoom;
+    let top_f = origin.1 + ny as f32 * zoom;
+    let w_f = nw as f32 * zoom;
+    let h_f = nh as f32 * zoom;
+    let cut_left = left_f.clamp(0.0, stage_size.0);
+    let cut_top = top_f.clamp(0.0, stage_size.1);
+    let cut_right = (left_f + w_f).clamp(cut_left, stage_size.0);
+    let cut_bottom = (top_f + h_f).clamp(cut_top, stage_size.1);
+    let cut_w = cut_right - cut_left;
+    let half_handle = CROP_HANDLE_SIZE * 0.5;
     let corners = [
-        (left - half_handle, top - half_handle),
-        (left + w - half_handle, top - half_handle),
-        (left - half_handle, top + h - half_handle),
-        (left + w - half_handle, top + h - half_handle),
+        (
+            left_f - half_handle,
+            top_f - half_handle,
+            gpui::CursorStyle::ResizeUpLeftDownRight,
+        ),
+        (
+            left_f + w_f - half_handle,
+            top_f - half_handle,
+            gpui::CursorStyle::ResizeUpRightDownLeft,
+        ),
+        (
+            left_f - half_handle,
+            top_f + h_f - half_handle,
+            gpui::CursorStyle::ResizeUpRightDownLeft,
+        ),
+        (
+            left_f + w_f - half_handle,
+            top_f + h_f - half_handle,
+            gpui::CursorStyle::ResizeUpLeftDownRight,
+        ),
     ];
 
-    div()
+    let mut overlay = div()
         .absolute()
         .inset_0()
-        .child(div().absolute().left_0().top_0().w(left).h_full().bg(dim))
         .child(
             div()
                 .absolute()
-                .left(left + w)
+                .left_0()
+                .top_0()
+                .w(px(cut_left))
+                .h_full()
+                .bg(dim),
+        )
+        .child(
+            div()
+                .absolute()
+                .left(px(cut_right))
                 .top_0()
                 .right_0()
                 .h_full()
                 .bg(dim),
         )
-        .child(div().absolute().left(left).top_0().w(w).h(top).bg(dim))
         .child(
             div()
                 .absolute()
-                .left(left)
-                .top(top + h)
-                .w(w)
+                .left(px(cut_left))
+                .top_0()
+                .w(px(cut_w))
+                .h(px(cut_top))
+                .bg(dim),
+        )
+        .child(
+            div()
+                .absolute()
+                .left(px(cut_left))
+                .top(px(cut_bottom))
+                .w(px(cut_w))
                 .bottom_0()
                 .bg(dim),
         )
         .child(
             div()
                 .absolute()
-                .left(left)
-                .top(top)
-                .w(w)
-                .h(h)
+                .left(px(left_f))
+                .top(px(top_f))
+                .w(px(w_f))
+                .h(px(h_f))
                 .rounded(px(1.0))
-                .border_2()
-                .border_color(theme.primary),
+                .border_1()
+                .border_color(border)
+                .cursor(gpui::CursorStyle::OpenHand),
         )
-        .children(corners.into_iter().map(|(hx, hy)| {
+        .children(corners.into_iter().map(|(hx, hy, cursor)| {
             div()
                 .absolute()
-                .left(hx)
-                .top(hy)
-                .w(handle)
-                .h(handle)
+                .left(px(hx))
+                .top(px(hy))
+                .w(px(CROP_HANDLE_SIZE))
+                .h(px(CROP_HANDLE_SIZE))
                 .rounded(px(2.0))
-                .bg(theme.primary_foreground)
-                .border_2()
-                .border_color(theme.primary)
-        }))
-        .child(crop_hint(left, top, w, h, theme))
-        .into_any_element()
+                .bg(handle_fill)
+                .border_1()
+                .border_color(handle_border)
+                .shadow(vec![gpui::BoxShadow {
+                    color: crate::ui::colors::black(0.3),
+                    offset: gpui::point(px(0.0), px(1.0)),
+                    blur_radius: px(2.0),
+                    spread_radius: px(0.0),
+                    inset: false,
+                }])
+                .cursor(cursor)
+        }));
+
+    if nw >= 2.0 && nh >= 2.0 {
+        overlay = overlay.child(crop_hint(left_f, top_f, w_f, h_f, stage_size));
+    }
+
+    overlay.into_any_element()
 }
 
-const CROP_HINT_GAP: f32 = 24.0;
-const CROP_HINT_FONT_SIZE: f32 = 14.0;
-
-fn crop_hint_layout(left: f32, top: f32, width: f32, height: f32) -> (f32, f32, f32) {
-    (left, top + height + CROP_HINT_GAP, width)
+fn crop_hint_layout(
+    left: f32,
+    top: f32,
+    width: f32,
+    height: f32,
+    stage_width: f32,
+    stage_height: f32,
+) -> (f32, f32, f32) {
+    let center_x = left + width * 0.5;
+    let half_w = CROP_HINT_EST_WIDTH * 0.5;
+    let clamped_cx = if stage_width > CROP_HINT_EST_WIDTH + CROP_HINT_EDGE_PAD * 2.0 {
+        center_x.clamp(
+            half_w + CROP_HINT_EDGE_PAD,
+            stage_width - half_w - CROP_HINT_EDGE_PAD,
+        )
+    } else {
+        stage_width * 0.5
+    };
+    let below = top + height + CROP_HINT_GAP;
+    let hint_top = if below + CROP_HINT_HEIGHT <= stage_height {
+        below
+    } else if top >= CROP_HINT_GAP + CROP_HINT_HEIGHT {
+        top - CROP_HINT_GAP - CROP_HINT_HEIGHT
+    } else {
+        (top + height - CROP_HINT_GAP - CROP_HINT_HEIGHT).max(top + CROP_HINT_GAP)
+    };
+    (clamped_cx - half_w, hint_top, CROP_HINT_EST_WIDTH)
 }
 
-fn crop_hint(
-    left: Pixels,
-    top: Pixels,
-    width: Pixels,
-    height: Pixels,
-    theme: &crate::theme::vars::ThemeVars,
-) -> gpui::Div {
-    let (hint_left, hint_top, hint_width) = crop_hint_layout(
-        f32::from(left),
-        f32::from(top),
-        f32::from(width),
-        f32::from(height),
-    );
+fn crop_hint(left: f32, top: f32, width: f32, height: f32, stage_size: (f32, f32)) -> gpui::Div {
+    let (hint_left, hint_top, hint_width) =
+        crop_hint_layout(left, top, width, height, stage_size.0, stage_size.1);
     div()
         .absolute()
         .left(px(hint_left))
@@ -2560,9 +2641,23 @@ fn crop_hint(
         .w(px(hint_width))
         .flex()
         .justify_center()
-        .text_size(px(CROP_HINT_FONT_SIZE))
-        .text_color(theme.primary)
-        .child(div().whitespace_nowrap().child("Press Enter to crop"))
+        .child(
+            div()
+                .flex_shrink_0()
+                .whitespace_nowrap()
+                .rounded(px(crate::ui::chrome::RADIUS_3XL))
+                .bg(crate::ui::colors::black(0.75))
+                .border_1()
+                .border_color(crate::ui::colors::white(0.14))
+                .px(px(crate::ui::chrome::OVERLAY_LABEL_PX))
+                .py(px(crate::ui::chrome::OVERLAY_LABEL_PY))
+                .font_family(crate::ui::font::UI_FONT)
+                .font_weight(gpui::FontWeight::MEDIUM)
+                .text_size(px(CROP_HINT_FONT_SIZE))
+                .text_color(crate::ui::colors::white(0.92))
+                .shadow_sm()
+                .child("Press Enter to crop"),
+        )
 }
 
 #[cfg(test)]
@@ -2768,9 +2863,166 @@ mod tests {
 
     #[test]
     fn crop_hint_sits_centred_below_the_box() {
-        let (left, top, width) = crop_hint_layout(40.0, 60.0, 200.0, 120.0);
-        assert_eq!(left, 40.0);
-        assert_eq!(top, 204.0);
-        assert_eq!(width, 200.0);
+        let (left, top, width) = crop_hint_layout(40.0, 60.0, 200.0, 120.0, 800.0, 600.0);
+        assert_eq!(left + width * 0.5, 140.0);
+        assert_eq!(top, 190.0);
+        assert_eq!(width, CROP_HINT_EST_WIDTH);
+    }
+
+    #[test]
+    fn crop_hint_clamps_near_edges_and_flips_when_bottom_is_tight() {
+        let (left, top, width) = crop_hint_layout(740.0, 200.0, 50.0, 100.0, 800.0, 600.0);
+        assert!(left + width <= 800.0 - CROP_HINT_EDGE_PAD + 0.01);
+        assert_eq!(top, 310.0);
+
+        let (_, flipped_top, _) = crop_hint_layout(100.0, 500.0, 200.0, 95.0, 800.0, 600.0);
+        assert_eq!(flipped_top, 500.0 - CROP_HINT_GAP - CROP_HINT_HEIGHT);
+
+        let (_, inside_top, _) = crop_hint_layout(100.0, 0.0, 200.0, 600.0, 800.0, 600.0);
+        assert_eq!(inside_top, 600.0 - CROP_HINT_GAP - CROP_HINT_HEIGHT);
+    }
+
+    struct CropOverlaySurface {
+        snapshot: SnapshotCell,
+        bounds: Rc<RefCell<Option<gpui::Bounds<Pixels>>>>,
+        scroll: ScrollHandle,
+    }
+
+    impl Render for CropOverlaySurface {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let content = div().size_full().child(EditorCanvas::new(
+                self.snapshot.clone(),
+                self.bounds.clone(),
+                self.scroll.clone(),
+            ));
+            crate::ui::window_root::focus_root(content, window, cx)
+        }
+    }
+
+    #[herogpui::test]
+    fn crop_overlay_paints_above_annotations_with_thin_neutral_chrome(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let base_image = std::sync::Arc::new(gpui::RenderImage::new(smallvec::smallvec![
+            image::Frame::new(image::RgbaImage::from_pixel(
+                200,
+                160,
+                image::Rgba([40, 40, 40, 255]),
+            ))
+        ]));
+        let snapshot = Rc::new(RefCell::new(CanvasSnapshot {
+            image: Some(base_image),
+            image_tiles: Vec::new(),
+            redact_patches: std::collections::HashMap::new(),
+            image_width: 200.0,
+            image_height: 160.0,
+            zoom: 1.0,
+            annotations: Vec::new(),
+            draft: None,
+            tool: Tool::Crop,
+            color_hex: "#ff0000".into(),
+            stroke_width: 4.0,
+            crop: Some((30.0, 20.0, 100.0, 80.0)),
+            wallpaper: crate::editor::wallpaper::WallpaperSettings::default(),
+            frame_scale: 1.0,
+            backdrop: None,
+            backdrop_composite: false,
+            rounded_matte: None,
+            backdrop_tiles: Vec::new(),
+            preview_edges: Vec::new(),
+            live_background: LiveBackground::None,
+            inset_color: None,
+            selected: Vec::new(),
+            editing_text: None,
+            marquee: None,
+            balance_crop: None,
+            layers: Vec::new(),
+            spacing: 0.0,
+        }));
+        let (view, cx) = herogpui::test::open_window(cx, {
+            let snapshot = snapshot.clone();
+            move |_, _| CropOverlaySurface {
+                snapshot,
+                bounds: Rc::new(RefCell::new(None)),
+                scroll: ScrollHandle::new(),
+            }
+        });
+        cx.settle();
+        let order_without_annotations = cx.update(|window, cx| {
+            let theme = active_theme(cx);
+            let scale = window.scale_factor();
+            let quads = window.painted_quads();
+            let crop_box = quads
+                .iter()
+                .find(|quad| {
+                    (quad.bounds.size.width.0 / scale - 100.0).abs() < 0.5
+                        && (quad.bounds.size.height.0 / scale - 80.0).abs() < 0.5
+                        && (quad.border_widths.top.0 / scale - 1.0).abs() < 0.1
+                })
+                .expect("crop box must paint with a 1px border");
+            assert_ne!(
+                crop_box.border_color, theme.primary,
+                "crop border must be neutral rather than the accent color"
+            );
+            let handle_positions: std::collections::BTreeSet<(i32, i32)> = quads
+                .iter()
+                .filter(|quad| {
+                    quad.order > crop_box.order
+                        && (quad.bounds.size.width.0 / scale - CROP_HANDLE_SIZE).abs() < 0.5
+                        && (quad.bounds.size.height.0 / scale - CROP_HANDLE_SIZE).abs() < 0.5
+                        && (quad.border_widths.top.0 / scale - 1.0).abs() < 0.1
+                })
+                .map(|quad| {
+                    assert_ne!(quad.border_color, theme.primary);
+                    (
+                        (quad.bounds.origin.x.0 / scale).round() as i32,
+                        (quad.bounds.origin.y.0 / scale).round() as i32,
+                    )
+                })
+                .collect();
+            assert_eq!(handle_positions.len(), 4, "all four 8px handles must paint");
+            crop_box.order
+        });
+
+        snapshot.borrow_mut().annotations = vec![
+            Annotation::Rectangle {
+                id: "r1".into(),
+                x: 10.0,
+                y: 10.0,
+                width: 180.0,
+                height: 140.0,
+                stroke: "#ff0000".into(),
+                stroke_width: 4.0,
+                fill: Some("#ff0000".into()),
+            },
+            Annotation::Redact {
+                id: "r2".into(),
+                x: 20.0,
+                y: 20.0,
+                width: 120.0,
+                height: 90.0,
+                style: "blackout".into(),
+                intensity: 10.0,
+            },
+        ];
+        cx.update(|_, cx| view.update(cx, |_, cx| cx.notify()));
+        cx.settle();
+
+        cx.update(|window, _| {
+            let scale = window.scale_factor();
+            let crop_box = window
+                .painted_quads()
+                .into_iter()
+                .find(|quad| {
+                    (quad.bounds.size.width.0 / scale - 100.0).abs() < 0.5
+                        && (quad.bounds.size.height.0 / scale - 80.0).abs() < 0.5
+                        && (quad.border_widths.top.0 / scale - 1.0).abs() < 0.1
+                })
+                .expect("crop box must still paint with annotations present");
+            assert!(
+                crop_box.order > order_without_annotations,
+                "crop overlay must paint after annotations"
+            );
+        });
     }
 }
