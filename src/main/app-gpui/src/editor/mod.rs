@@ -16,6 +16,7 @@ pub mod preview_raster;
 pub(crate) mod screenshot_save;
 #[cfg(unix)]
 pub(crate) mod screenshot_save_unix;
+pub mod text_input;
 pub mod text_render;
 pub mod title_bar;
 pub mod tool_options;

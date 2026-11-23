@@ -214,7 +214,28 @@ fn hit_test_annotation(
             stroke_width,
             ..
         } => hit_test_highlight(points, *stroke_width, point, zoom, budget),
+        Annotation::Text { .. } => hit_test_text(annotation, point),
         _ => legacy_annotation_hit(annotation, point),
+    }
+}
+
+fn hit_test_text(annotation: &Annotation, point: (f64, f64)) -> AnnotationHit {
+    let Some(text_box) = annotation.text_box() else {
+        return AnnotationHit::Miss;
+    };
+    let dx = point.0 - text_box.center_x;
+    let dy = point.1 - text_box.center_y;
+    let (sin, cos) = (-text_box.rotation.to_radians()).sin_cos();
+    let local_x = text_box.center_x + dx * cos - dy * sin;
+    let local_y = text_box.center_y + dx * sin + dy * cos;
+    if local_x >= text_box.x
+        && local_x <= text_box.x + text_box.width
+        && local_y >= text_box.y
+        && local_y <= text_box.y + text_box.height
+    {
+        AnnotationHit::Hit
+    } else {
+        AnnotationHit::Miss
     }
 }
 
@@ -2255,6 +2276,60 @@ mod tests {
         assert_eq!(
             screenshot_annotation_at(&[lower, redact], (50.0, 50.0), 1.0).map(Annotation::id),
             Some("redact")
+        );
+    }
+
+    #[test]
+    fn rotated_and_padded_text_hit_tests_match_visual_box() {
+        let padded = Annotation::Text {
+            id: "padded".into(),
+            x: 100.0,
+            y: 100.0,
+            text: "Hello".into(),
+            font_size: 24.0,
+            fill: "#ffffff".into(),
+            font_family: None,
+            background_color: Some("rgba(0, 0, 0, 0.75)".into()),
+            background_opacity: None,
+            background_padding: Some(Offset { x: 8.0, y: 4.0 }),
+            background_radius: Some(4.0),
+            rotation: None,
+        };
+        assert_eq!(
+            screenshot_annotation_at(std::slice::from_ref(&padded), (94.0, 98.0), 1.0)
+                .map(Annotation::id),
+            Some("padded")
+        );
+
+        let rotated = Annotation::Text {
+            id: "rotated".into(),
+            x: 100.0,
+            y: 100.0,
+            text: "Wide Label".into(),
+            font_size: 20.0,
+            fill: "#ffffff".into(),
+            font_family: None,
+            background_color: None,
+            background_opacity: None,
+            background_padding: None,
+            background_radius: None,
+            rotation: Some(90.0),
+        };
+        let text_box = rotated.text_box().expect("text box");
+        let rotated_top_tip = (
+            text_box.center_x,
+            text_box.center_y - text_box.width / 2.0 + 4.0,
+        );
+        let unrotated_right_tip = (text_box.x + text_box.width - 4.0, text_box.center_y);
+        assert_eq!(
+            screenshot_annotation_at(std::slice::from_ref(&rotated), rotated_top_tip, 1.0)
+                .map(Annotation::id),
+            Some("rotated")
+        );
+        assert_eq!(
+            screenshot_annotation_at(std::slice::from_ref(&rotated), unrotated_right_tip, 1.0)
+                .map(Annotation::id),
+            None
         );
     }
 
