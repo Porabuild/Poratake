@@ -196,19 +196,16 @@ impl Source {
             warmup.cancel.close();
         }
 
-        let video = cached_frame(&mut self.video_frame, video_time, || {
-            decode_frame(
-                self.video.as_ref(),
-                video_time,
-                decode_wait,
-                cancelled,
-                None,
-            )
+        let video = cached_frame(&mut self.video_frame, video_time, decode_wait, || {
+            decode_frame(self.video.as_ref(), video_time, cancelled, None)
         })?;
         let camera = if self.engine.camera_visible_at(timeline_time) {
             let camera_wait_superseded = camera_wait.map(|(superseded, _)| superseded);
             if let Some(opening) = self.camera_opening.take() {
-                match opening.finish_interruptible(cancelled, camera_wait_superseded) {
+                let open_started = Instant::now();
+                let opened = opening.finish_interruptible(cancelled, camera_wait_superseded);
+                *decode_wait += open_started.elapsed();
+                match opened {
                     Ok(camera) => self.camera = camera,
                     Err(opening) => {
                         self.camera_opening = Some(opening);
@@ -217,14 +214,8 @@ impl Source {
                 }
             }
             self.camera_decode_active = self.camera.is_some();
-            let camera = cached_frame(&mut self.camera_frame, video_time, || {
-                decode_frame(
-                    self.camera.as_ref(),
-                    video_time,
-                    decode_wait,
-                    cancelled,
-                    camera_wait,
-                )
+            let camera = cached_frame(&mut self.camera_frame, video_time, decode_wait, || {
+                decode_frame(self.camera.as_ref(), video_time, cancelled, camera_wait)
             });
             if camera.is_none()
                 && (self.has_decoded_camera
@@ -332,25 +323,22 @@ impl Source {
 fn decode_frame(
     decoder: Option<&VideoDecoder>,
     time: f64,
-    decode_wait: &mut Duration,
     cancelled: Option<&FrameCancellation>,
     superseded: Option<(&FrameCancellation, &BackgroundExecutor)>,
 ) -> Option<DecodedFrame> {
     let decoder = decoder?;
-    let started = Instant::now();
-    let frame = match superseded {
+    match superseded {
         Some((superseded, executor)) => {
             smol::block_on(decoder.frame_at_supersedable(time, cancelled, superseded, executor))
         }
         None => decoder.frame_at_interruptible(time, cancelled),
-    };
-    *decode_wait += started.elapsed();
-    frame
+    }
 }
 
 fn cached_frame(
     cached: &mut Option<CachedFrame>,
     time: f64,
+    decode_wait: &mut Duration,
     decode: impl FnOnce() -> Option<DecodedFrame>,
 ) -> Option<Arc<Pixmap>> {
     if let Some(frame) = cached
@@ -359,41 +347,47 @@ fn cached_frame(
     {
         return Some(frame.pixmap.clone());
     }
-    #[cfg(all(feature = "parity", target_os = "macos"))]
-    let decode_started =
-        std::env::var_os("PORATAKE_NATIVE_SMOKE_VIDEO_PLAYBACK").map(|_| std::time::Instant::now());
-    let decoded = decode();
-    #[cfg(all(feature = "parity", target_os = "macos"))]
-    if let Some(started) = decode_started {
-        println!(
-            "VIDEO_SMOKE decode {time:.6} {:.3} {}",
-            started.elapsed().as_secs_f64() * 1000.,
-            decoded.is_some(),
-        );
-    }
-
-    let frame = decoded?;
-    let decoded = frame.bgra.downgrade();
-    if let Some(cached) = cached.as_mut().filter(|cached| {
-        cached.pixmap.width() == frame.width.max(1) && cached.pixmap.height() == frame.height.max(1)
-    }) {
-        if !cached.decoded.ptr_eq(&decoded) {
-            match Arc::get_mut(&mut cached.pixmap) {
-                Some(pixmap) => frame.write_to_pixmap(pixmap)?,
-                None => cached.pixmap = Arc::new(frame.to_pixmap()?),
-            }
-            cached.decoded = decoded;
+    let started = Instant::now();
+    let result = (|| {
+        #[cfg(all(feature = "parity", target_os = "macos"))]
+        let decode_started = std::env::var_os("PORATAKE_NATIVE_SMOKE_VIDEO_PLAYBACK")
+            .map(|_| std::time::Instant::now());
+        let decoded = decode();
+        #[cfg(all(feature = "parity", target_os = "macos"))]
+        if let Some(started) = decode_started {
+            println!(
+                "VIDEO_SMOKE decode {time:.6} {:.3} {}",
+                started.elapsed().as_secs_f64() * 1000.,
+                decoded.is_some(),
+            );
         }
-        cached.time = time;
-        return Some(cached.pixmap.clone());
-    }
-    let pixmap = Arc::new(frame.to_pixmap()?);
-    *cached = Some(CachedFrame {
-        time,
-        decoded,
-        pixmap: pixmap.clone(),
-    });
-    Some(pixmap)
+
+        let frame = decoded?;
+        let decoded = frame.bgra.downgrade();
+        if let Some(cached) = cached.as_mut().filter(|cached| {
+            cached.pixmap.width() == frame.width.max(1)
+                && cached.pixmap.height() == frame.height.max(1)
+        }) {
+            if !cached.decoded.ptr_eq(&decoded) {
+                match Arc::get_mut(&mut cached.pixmap) {
+                    Some(pixmap) => frame.write_to_pixmap(pixmap)?,
+                    None => cached.pixmap = Arc::new(frame.to_pixmap()?),
+                }
+                cached.decoded = decoded;
+            }
+            cached.time = time;
+            return Some(cached.pixmap.clone());
+        }
+        let pixmap = Arc::new(frame.to_pixmap()?);
+        *cached = Some(CachedFrame {
+            time,
+            decoded,
+            pixmap: pixmap.clone(),
+        });
+        Some(pixmap)
+    })();
+    *decode_wait += started.elapsed();
+    result
 }
 
 /// Converts a composed pixmap into the straight-alpha BGRA image GPUI paints.
@@ -545,9 +539,13 @@ mod tests {
             height: 2,
             bgra: [220, 140, 50, 255].repeat(4).into(),
         };
-        let before = cached_frame(&mut source.video_frame, video_time, || {
-            Some(decoded.clone())
-        })
+        let mut decode_wait = Duration::ZERO;
+        let before = cached_frame(
+            &mut source.video_frame,
+            video_time,
+            &mut decode_wait,
+            || Some(decoded.clone()),
+        )
         .unwrap();
         let intro_duration = source.engine.first_frame_duration();
         assert!(intro_duration > 0.);
@@ -567,7 +565,13 @@ mod tests {
             .compose(intro_duration + 0.25, Some((1, 1)))
             .is_none());
 
-        cached_frame(&mut source.video_frame, video_time, || Some(decoded)).unwrap();
+        cached_frame(
+            &mut source.video_frame,
+            video_time,
+            &mut decode_wait,
+            || Some(decoded),
+        )
+        .unwrap();
         let recovered = source
             .compose(intro_duration + video_time, None)
             .expect("screen preview");
@@ -635,21 +639,40 @@ mod tests {
                 .contains(&[240, 34, 12, 255])
         };
 
-        cached_frame(&mut source.video_frame, 0., || Some(screen.clone())).unwrap();
+        let mut decode_wait = Duration::ZERO;
+        cached_frame(&mut source.video_frame, 0., &mut decode_wait, || {
+            Some(screen.clone())
+        })
+        .unwrap();
         assert!(!has_camera_pixels(&source.compose(0., None).unwrap()));
-        cached_frame(&mut source.camera_frame, 0., || Some(camera.clone())).unwrap();
+        cached_frame(&mut source.camera_frame, 0., &mut decode_wait, || {
+            Some(camera.clone())
+        })
+        .unwrap();
         assert!(has_camera_pixels(&source.compose(0., None).unwrap()));
 
         for time in [0.25, 0.5] {
-            cached_frame(&mut source.video_frame, time, || Some(screen.clone())).unwrap();
+            cached_frame(&mut source.video_frame, time, &mut decode_wait, || {
+                Some(screen.clone())
+            })
+            .unwrap();
             assert!(source.compose(time, Some((160, 90))).is_none());
         }
 
-        cached_frame(&mut source.video_frame, 0.75, || Some(screen.clone())).unwrap();
-        cached_frame(&mut source.camera_frame, 0.75, || Some(camera)).unwrap();
+        cached_frame(&mut source.video_frame, 0.75, &mut decode_wait, || {
+            Some(screen.clone())
+        })
+        .unwrap();
+        cached_frame(&mut source.camera_frame, 0.75, &mut decode_wait, || {
+            Some(camera)
+        })
+        .unwrap();
         assert!(has_camera_pixels(&source.compose(0.75, None).unwrap()));
 
-        cached_frame(&mut source.video_frame, 1.25, || Some(screen)).unwrap();
+        cached_frame(&mut source.video_frame, 1.25, &mut decode_wait, || {
+            Some(screen)
+        })
+        .unwrap();
         assert!(!has_camera_pixels(&source.compose(1.25, None).unwrap()));
     }
 
@@ -661,8 +684,12 @@ mod tests {
             bgra: vec![10, 20, 30, 255].into(),
         };
         let mut cached = None;
-        let frame = cached_frame(&mut cached, 2.0, || Some(decoded)).unwrap();
-        let reused = cached_frame(&mut cached, 2.0, || panic!("already cached")).unwrap();
+        let mut decode_wait = Duration::ZERO;
+        let frame = cached_frame(&mut cached, 2.0, &mut decode_wait, || Some(decoded)).unwrap();
+        let reused = cached_frame(&mut cached, 2.0, &mut decode_wait, || {
+            panic!("already cached")
+        })
+        .unwrap();
         assert!(Arc::ptr_eq(&frame, &reused));
     }
 
@@ -674,8 +701,13 @@ mod tests {
             bgra: vec![10, 20, 30, 255].into(),
         };
         let mut cached = None;
-        let first = cached_frame(&mut cached, 0.0, || Some(decoded.clone())).unwrap();
-        let next = cached_frame(&mut cached, 0.01, || Some(decoded.clone())).unwrap();
+        let mut decode_wait = Duration::ZERO;
+        let first =
+            cached_frame(&mut cached, 0.0, &mut decode_wait, || Some(decoded.clone())).unwrap();
+        let next = cached_frame(&mut cached, 0.01, &mut decode_wait, || {
+            Some(decoded.clone())
+        })
+        .unwrap();
         assert!(Arc::ptr_eq(&first, &next));
         assert_eq!(next.data(), &[30, 20, 10, 255]);
         assert_eq!(decoded.bgra.strong_count(), 1);
@@ -684,7 +716,8 @@ mod tests {
             bgra: vec![40, 50, 60, 255].into(),
             ..decoded
         };
-        let changed = cached_frame(&mut cached, 0.02, || Some(different)).unwrap();
+        let changed =
+            cached_frame(&mut cached, 0.02, &mut decode_wait, || Some(different)).unwrap();
         assert!(!Arc::ptr_eq(&first, &changed));
         assert_eq!(changed.data(), &[60, 50, 40, 255]);
     }
@@ -692,12 +725,13 @@ mod tests {
     #[test]
     fn a_distinct_frame_reuses_unshared_pixmap_storage() {
         let mut cached = None;
+        let mut decode_wait = Duration::ZERO;
         let first = DecodedFrame {
             width: 2,
             height: 1,
             bgra: vec![10, 20, 30, 255, 40, 50, 60, 255].into(),
         };
-        let original = cached_frame(&mut cached, 0., || Some(first)).unwrap();
+        let original = cached_frame(&mut cached, 0., &mut decode_wait, || Some(first)).unwrap();
         let allocation = original.data().as_ptr();
         drop(original);
 
@@ -706,7 +740,8 @@ mod tests {
             height: 1,
             bgra: vec![15, 25, 35, 255, 45, 55, 65, 255].into(),
         };
-        let reused = cached_frame(&mut cached, 0.1, || Some(next.clone())).unwrap();
+        let reused =
+            cached_frame(&mut cached, 0.1, &mut decode_wait, || Some(next.clone())).unwrap();
         assert_eq!(reused.data().as_ptr(), allocation);
         assert_eq!(reused.data(), next.to_pixmap().unwrap().data());
     }

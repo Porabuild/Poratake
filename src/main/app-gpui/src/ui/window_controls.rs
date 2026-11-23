@@ -1,8 +1,8 @@
 use std::sync::LazyLock;
 
 use gpui::{
-    canvas, div, point, prelude::*, px, AnyElement, App, Div, ElementId, Hsla, PathBuilder, Pixels,
-    Point, Stateful, Styled, Window, WindowControlArea,
+    canvas, div, point, prelude::*, px, size, AnyElement, App, Bounds, Div, ElementId, Hsla,
+    Stateful, Styled, Window, WindowControlArea,
 };
 use herogpui::gpui;
 
@@ -13,7 +13,6 @@ use crate::ui::colors;
 
 static CLOSE_HOVER: LazyLock<Hsla> = LazyLock::new(|| Srgba::parse("#c42b1c").to_hsla());
 const GLYPH: f32 = 10.0;
-const STROKE: f32 = 1.25;
 
 #[derive(Clone, Copy)]
 enum Glyph {
@@ -229,13 +228,20 @@ fn caption(
 fn caption_glyph(glyph: Glyph, fallback: Hsla) -> AnyElement {
     canvas(
         |_, _, _| {},
-        move |bounds, _: (), window, _| {
+        move |bounds, _: (), window, cx| {
             let color = window.text_style().color;
             let color = if color.a > 0.0 { color } else { fallback };
             let origin = bounds.center() - point(px(GLYPH / 2.0), px(GLYPH / 2.0));
-            if let Some(path) = glyph_path(glyph, origin) {
-                window.paint_path(path, color);
-            }
+            let glyph_bounds = Bounds::new(origin, size(px(GLYPH), px(GLYPH)));
+            let (key, svg) = glyph_svg(glyph);
+            let _ = window.paint_svg(
+                glyph_bounds,
+                key.into(),
+                Some(svg),
+                gpui::TransformationMatrix::unit(),
+                color,
+                cx,
+            );
         },
     )
     .w(px(GLYPH))
@@ -243,39 +249,18 @@ fn caption_glyph(glyph: Glyph, fallback: Hsla) -> AnyElement {
     .into_any_element()
 }
 
-fn glyph_path(glyph: Glyph, origin: Point<Pixels>) -> Option<gpui::Path<Pixels>> {
-    let mut builder = PathBuilder::stroke(px(STROKE));
-    let p = |x: f32, y: f32| origin + point(px(x), px(y));
+fn glyph_svg(glyph: Glyph) -> (&'static str, &'static [u8]) {
+    const MIN: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="white" stroke-width="1.25"><path d="M0 5 L10 5"/></svg>"#;
+    const MAX: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="white" stroke-width="1.25"><path d="M0.5 0.5 L9.5 0.5 L9.5 9.5 L0.5 9.5 Z"/></svg>"#;
+    const RESTORE: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="white" stroke-width="1.25"><path d="M2.5 0.5 L9.5 0.5 L9.5 7.5 M0.5 2.5 L7.5 2.5 L7.5 9.5 L0.5 9.5 Z"/></svg>"#;
+    const CLOSE: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="white" stroke-width="1.25"><path d="M0.5 0.5 L9.5 9.5 M9.5 0.5 L0.5 9.5"/></svg>"#;
+
     match glyph {
-        Glyph::Min => {
-            builder.move_to(p(0.0, GLYPH / 2.0));
-            builder.line_to(p(GLYPH, GLYPH / 2.0));
-        }
-        Glyph::Max => {
-            builder.move_to(p(0.5, 0.5));
-            builder.line_to(p(GLYPH - 0.5, 0.5));
-            builder.line_to(p(GLYPH - 0.5, GLYPH - 0.5));
-            builder.line_to(p(0.5, GLYPH - 0.5));
-            builder.line_to(p(0.5, 0.5));
-        }
-        Glyph::Restore => {
-            builder.move_to(p(2.5, 0.5));
-            builder.line_to(p(GLYPH - 0.5, 0.5));
-            builder.line_to(p(GLYPH - 0.5, GLYPH - 2.5));
-            builder.move_to(p(0.5, 2.5));
-            builder.line_to(p(GLYPH - 2.5, 2.5));
-            builder.line_to(p(GLYPH - 2.5, GLYPH - 0.5));
-            builder.line_to(p(0.5, GLYPH - 0.5));
-            builder.line_to(p(0.5, 2.5));
-        }
-        Glyph::Close => {
-            builder.move_to(p(0.5, 0.5));
-            builder.line_to(p(GLYPH - 0.5, GLYPH - 0.5));
-            builder.move_to(p(GLYPH - 0.5, 0.5));
-            builder.line_to(p(0.5, GLYPH - 0.5));
-        }
+        Glyph::Min => ("poratake-caption:min", MIN),
+        Glyph::Max => ("poratake-caption:max", MAX),
+        Glyph::Restore => ("poratake-caption:restore", RESTORE),
+        Glyph::Close => ("poratake-caption:close", CLOSE),
     }
-    builder.build().ok()
 }
 
 #[cfg(test)]

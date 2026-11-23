@@ -274,6 +274,112 @@ fn scaled_thumbnail_size(width: u32, height: u32, max_dimension: u32) -> (u32, u
     (target_w, target_h)
 }
 
+#[cfg(any(windows, test))]
+fn cover_crop_rect(src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> Option<(u32, u32, u32, u32)> {
+    if src_w == 0 || src_h == 0 || dst_w == 0 || dst_h == 0 {
+        return None;
+    }
+    let lhs = u64::from(src_w) * u64::from(dst_h);
+    let rhs = u64::from(src_h) * u64::from(dst_w);
+    if lhs > rhs {
+        let crop_w = ((u64::from(src_h) * u64::from(dst_w) + u64::from(dst_h) / 2)
+            / u64::from(dst_h))
+        .clamp(1, u64::from(src_w)) as u32;
+        let x = (src_w - crop_w) / 2;
+        Some((x, 0, crop_w, src_h))
+    } else {
+        let crop_h = ((u64::from(src_w) * u64::from(dst_h) + u64::from(dst_w) / 2)
+            / u64::from(dst_w))
+        .clamp(1, u64::from(src_h)) as u32;
+        let y = (src_h - crop_h) / 2;
+        Some((0, y, src_w, crop_h))
+    }
+}
+
+#[cfg(windows)]
+pub fn decode_cover_rgba(
+    path: &Path,
+    target_width: u32,
+    target_height: u32,
+) -> Option<image::RgbaImage> {
+    use windows::core::{HSTRING, PCWSTR};
+    use windows::Win32::Foundation::GENERIC_READ;
+    use windows::Win32::Graphics::Imaging::{
+        GUID_WICPixelFormat32bppRGBA, WICBitmapDitherTypeNone, WICBitmapInterpolationModeFant,
+        WICBitmapPaletteTypeCustom, WICDecodeMetadataCacheOnDemand, WICRect,
+    };
+
+    if target_width == 0 || target_height == 0 {
+        return None;
+    }
+    let factory = wic_factory()?;
+    unsafe {
+        let wide_path = HSTRING::from(path.as_os_str());
+        let decoder = factory
+            .CreateDecoderFromFilename(
+                PCWSTR(wide_path.as_ptr()),
+                None,
+                GENERIC_READ,
+                WICDecodeMetadataCacheOnDemand,
+            )
+            .ok()?;
+        let frame = decoder.GetFrame(0).ok()?;
+        let mut width = 0u32;
+        let mut height = 0u32;
+        frame.GetSize(&mut width, &mut height).ok()?;
+        let (crop_x, crop_y, crop_w, crop_h) =
+            cover_crop_rect(width, height, target_width, target_height)?;
+
+        let clipper = factory.CreateBitmapClipper().ok()?;
+        let rect = WICRect {
+            X: i32::try_from(crop_x).ok()?,
+            Y: i32::try_from(crop_y).ok()?,
+            Width: i32::try_from(crop_w).ok()?,
+            Height: i32::try_from(crop_h).ok()?,
+        };
+        clipper.Initialize(&frame, &rect).ok()?;
+
+        let scaler = factory.CreateBitmapScaler().ok()?;
+        scaler
+            .Initialize(
+                &clipper,
+                target_width,
+                target_height,
+                WICBitmapInterpolationModeFant,
+            )
+            .ok()?;
+
+        let converter = factory.CreateFormatConverter().ok()?;
+        converter
+            .Initialize(
+                &scaler,
+                &GUID_WICPixelFormat32bppRGBA,
+                WICBitmapDitherTypeNone,
+                None,
+                0.0,
+                WICBitmapPaletteTypeCustom,
+            )
+            .ok()?;
+
+        let stride = target_width.checked_mul(4)?;
+        let len = (stride as usize).checked_mul(target_height as usize)?;
+        let mut pixels = vec![0u8; len];
+        converter
+            .CopyPixels(std::ptr::null(), stride, &mut pixels)
+            .ok()?;
+        image::RgbaImage::from_raw(target_width, target_height, pixels)
+    }
+}
+
+#[cfg(not(windows))]
+pub fn decode_cover_rgba(
+    _path: &Path,
+    _target_width: u32,
+    _target_height: u32,
+) -> Option<image::RgbaImage> {
+    None
+}
+
 #[cfg(windows)]
 fn wic_factory() -> Option<IWICImagingFactory> {
     use std::cell::RefCell;
@@ -508,5 +614,19 @@ mod tests {
         assert_eq!(scaled_thumbnail_size(1080, 1920, 300), (169, 300));
         assert_eq!(scaled_thumbnail_size(200, 150, 300), (200, 150));
         assert_eq!(scaled_thumbnail_size(0, 100, 300), (1, 1));
+    }
+
+    #[test]
+    fn computes_centered_cover_crop_rect() {
+        assert_eq!(
+            cover_crop_rect(3440, 1440, 200, 140),
+            Some((691, 0, 2057, 1440))
+        );
+        assert_eq!(
+            cover_crop_rect(1080, 1920, 200, 140),
+            Some((0, 582, 1080, 756))
+        );
+        assert_eq!(cover_crop_rect(200, 140, 200, 140), Some((0, 0, 200, 140)));
+        assert_eq!(cover_crop_rect(0, 100, 200, 140), None);
     }
 }

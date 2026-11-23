@@ -4172,7 +4172,13 @@ fn check_redaction_draft(
     draft_x: f64,
     draft_y: f64,
 ) {
-    let bounds = cx.update(|cx| editor.read(cx).unwrap().bounds.borrow().unwrap());
+    let (bounds, original) = cx.update(|cx| {
+        let editor = editor.read(cx).unwrap();
+        (
+            editor.bounds.borrow().unwrap(),
+            editor.history.current().to_vec(),
+        )
+    });
     let left = f32::from(bounds.left()).round() as u32;
     let top = f32::from(bounds.top()).round() as u32;
     let x = left + ((draft_x as f32 + 8.5) * 1.5).floor() as u32;
@@ -4184,17 +4190,18 @@ fn check_redaction_draft(
         .0;
     assert!(baseline[..3].iter().any(|channel| *channel > 40));
     for style in ["blur", "pixelate", "blackout"] {
+        let annotation = crate::editor::annotations::Annotation::Redact {
+            id: "draft-over-redaction".into(),
+            x: draft_x,
+            y: draft_y,
+            width: 24.,
+            height: 16.,
+            style: style.into(),
+            intensity: 5.,
+        };
         editor
             .update(cx, |editor, _, cx| {
-                editor.draft = Some(crate::editor::annotations::Annotation::Redact {
-                    id: "draft-over-redaction".into(),
-                    x: draft_x,
-                    y: draft_y,
-                    width: 24.,
-                    height: 16.,
-                    style: style.into(),
-                    intensity: 5.,
-                });
+                editor.draft = Some(annotation.clone());
                 cx.notify();
             })
             .unwrap();
@@ -4204,17 +4211,30 @@ fn check_redaction_draft(
             .unwrap()
             .get_pixel(x, y)
             .0;
-        let opacity = if style == "blackout" { 0. } else { 0.15 };
+        let mut with_committed = original.clone();
+        with_committed.push(annotation);
+        editor
+            .update(cx, |editor, _, cx| {
+                editor.draft = None;
+                editor.history.push(with_committed);
+                cx.notify();
+            })
+            .unwrap();
+        settle(cx, editor.into());
+        let committed = cx
+            .capture_screenshot(editor.into())
+            .unwrap()
+            .get_pixel(x, y)
+            .0;
         for channel in 0..3 {
-            let expected = (f32::from(baseline[channel]) * opacity).round() as u8;
             assert!(
-                draft[channel].abs_diff(expected) <= 3,
-                "{style} draft at {draft_x},{draft_y}: {draft:?} vs {baseline:?}"
+                draft[channel].abs_diff(committed[channel]) <= 1,
+                "{style} draft at {draft_x},{draft_y}: {draft:?} vs committed {committed:?}"
             );
         }
         editor
             .update(cx, |editor, _, cx| {
-                editor.draft = None;
+                editor.history.push(original.clone());
                 cx.notify();
             })
             .unwrap();

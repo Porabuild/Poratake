@@ -31,6 +31,12 @@ interface PinWindowData {
 
 const pinWindows: Map<string, PinWindowData> = new Map();
 
+const PREVIEW_WIDTH = 200;
+const PREVIEW_HEIGHT = 140;
+const PREVIEW_MARGIN = 24;
+const PIN_MIN_SIZE = 48;
+const PIN_OFFSET = 30;
+
 interface PinScreenshotData {
   imageBase64: string;
   editorState: EditorState;
@@ -49,27 +55,36 @@ function createPinWindow(
   const pinId = `pin-${Date.now()}`;
 
   const primaryDisplay = screen.getPrimaryDisplay();
-  const { width: screenWidth, height: screenHeight } =
-    primaryDisplay.workAreaSize;
-  const scale = Math.min(
-    1,
-    (screenWidth * 0.5) / width,
-    (screenHeight * 0.5) / height
-  );
-  const windowWidth = Math.floor(width * scale);
-  const windowHeight = Math.floor(height * scale);
+  const workArea = primaryDisplay.workArea ?? {
+    x: 0,
+    y: 0,
+    width: primaryDisplay.workAreaSize.width,
+    height: primaryDisplay.workAreaSize.height,
+  };
+  const safeWidth = Math.max(width, 1);
+  const safeHeight = Math.max(height, 1);
+  const maxWidth = Math.max(Math.min(PREVIEW_WIDTH, workArea.width), 1);
+  const maxHeight = Math.max(Math.min(PREVIEW_HEIGHT, workArea.height), 1);
+  const minWidth = Math.min(PIN_MIN_SIZE, maxWidth);
+  const minHeight = Math.min(PIN_MIN_SIZE, maxHeight);
+  const scale = Math.min(1, maxWidth / safeWidth, maxHeight / safeHeight);
+  const scaledWidth = Math.floor(safeWidth * scale);
+  const scaledHeight = Math.floor(safeHeight * scale);
+  const windowWidth = Math.min(Math.max(scaledWidth, minWidth), maxWidth);
+  const windowHeight = Math.min(Math.max(scaledHeight, minHeight), maxHeight);
 
   const existingPinCount = pinWindows.size;
-  const offsetX = existingPinCount * 30;
-  const offsetY = existingPinCount * 30;
+  const offset = existingPinCount * PIN_OFFSET;
 
   const pinWindow = new BrowserWindow({
     width: windowWidth,
     height: windowHeight,
-    minWidth: 100,
-    minHeight: 100,
-    x: Math.min(screenWidth - windowWidth - 20 - offsetX, screenWidth - 120),
-    y: 20 + offsetY,
+    minWidth,
+    minHeight,
+    x:
+      workArea.x +
+      Math.max(0, workArea.width - windowWidth - PREVIEW_MARGIN - offset),
+    y: workArea.y + PREVIEW_MARGIN + offset,
     alwaysOnTop: true,
     frame: false,
     titleBarStyle: 'customButtonsOnHover',
@@ -83,6 +98,10 @@ function createPinWindow(
     transparent: false,
     hasShadow: true,
   });
+
+  if (scaledWidth >= minWidth && scaledHeight >= minHeight) {
+    pinWindow.setAspectRatio(safeWidth / safeHeight);
+  }
 
   loadAppWindow(pinWindow);
 
