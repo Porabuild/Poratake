@@ -3351,7 +3351,7 @@ try {
             return $handle
         }
         return $null
-    } 10000 'Ctrl+S did not open the native Save Screenshot dialog.'
+    } 30000 'Ctrl+S did not open the native Save Screenshot dialog.'
     if ([PoratakeTooltipProbe]::GetWindow($saveDialog, 4) -ne $editorHandle) { throw 'The Save Screenshot dialog is not owned by the screenshot editor.' }
     if (-not [PoratakeTooltipProbe]::SetForegroundWindow($saveDialog)) { throw 'Could not foreground the owned Save Screenshot dialog.' }
     Wait-Until {

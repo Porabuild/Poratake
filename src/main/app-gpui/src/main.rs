@@ -220,7 +220,9 @@ fn dispatch_cli_intent(id: Option<&str>, extra: Option<String>, cx: &mut App) {
         }
         Some(intent) => {
             intents::dispatch(intent, None, cx);
-            cx.activate(true);
+            if !intent.starts_capture() {
+                cx.activate(true);
+            }
         }
         None => eprintln!("[cli] --intent needs a tray intent id"),
     }

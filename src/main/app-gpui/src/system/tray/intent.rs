@@ -52,7 +52,6 @@ const INTENT_IDS: &[(Intent, &str)] = &[
 ];
 
 impl Intent {
-    #[cfg(target_os = "macos")]
     pub(crate) fn starts_capture(self) -> bool {
         matches!(
             self,
@@ -158,5 +157,16 @@ mod tests {
         assert!(!Intent::RecordWindow.is_supported_with(|_| false));
         assert!(Intent::RecordScreen.is_supported_with(|feature| feature == Feature::Recording));
         assert!(Intent::RecordArea.is_supported_with(|feature| feature == Feature::Recording));
+    }
+
+    #[test]
+    fn capture_intents_are_flagged_for_deferred_activation() {
+        assert!(Intent::CaptureArea.starts_capture());
+        assert!(Intent::AllInOne.starts_capture());
+        assert!(Intent::CaptureWindow.starts_capture());
+        assert!(Intent::CaptureScreen.starts_capture());
+        assert!(!Intent::History.starts_capture());
+        assert!(!Intent::OpenSettings.starts_capture());
+        assert!(!Intent::OpenInEditor.starts_capture());
     }
 }

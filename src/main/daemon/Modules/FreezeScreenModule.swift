@@ -145,13 +145,18 @@ class FreezeScreenModule: Module {
         removeOverlays()
 
         let started = CFAbsoluteTimeGetCurrent()
-        var capturedAt = started
-
+        var captured: [(screen: NSScreen, frame: (image: CGImage, rect: CGRect))] = []
         for screen in NSScreen.screens {
             guard let frame = captureFrame(for: screen) else {
                 continue
             }
-            capturedAt = CFAbsoluteTimeGetCurrent()
+            captured.append((screen: screen, frame: frame))
+        }
+        let capturedAt = CFAbsoluteTimeGetCurrent()
+
+        for entry in captured {
+            let screen = entry.screen
+            let frame = entry.frame
 
             FrozenFrameStore.store(FrozenFrame(
                 image: frame.image,
@@ -179,12 +184,12 @@ class FreezeScreenModule: Module {
             window.isOpaque = true
             window.hasShadow = false
             window.ignoresMouseEvents = true
-            window.collectionBehavior = [.canJoinAllSpaces, .stationary]
+            window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
             window.animationBehavior = .none
             
             CATransaction.begin()
             CATransaction.setDisableActions(true)
-            window.orderFront(nil)
+            window.orderFrontRegardless()
             CATransaction.commit()
             
             overlayWindows.append(window)
