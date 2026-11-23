@@ -4026,15 +4026,21 @@ try {
     if ($handoffStopHit -eq [IntPtr]::Zero -or [PoratakeTooltipProbe]::GetAncestor($handoffStopHit, 2) -ne $handoffControl) { throw 'Native hit testing at Stop recording did not reach its control window.' }
     [PoratakeTooltipProbe]::Click($handoffStopX, $handoffStopY)
     Wait-Until { -not [PoratakeTooltipProbe]::IsWindowVisible($handoffControl) } 15000 'The area recording control did not close after stopping.' | Out-Null
+    $script:parkedDiagnostic = 'none'
     $parkedRegionReady = Wait-Until {
         try {
-            if ([PoratakeTooltipProbe]::IsWindowVisible($handoffOverlay)) { return $null }
-            if ([PoratakeTooltipProbe]::WindowHasCustomRegion($handoffOverlay)) { return $null }
-            return $true
-        } catch { }
+            $vis = [PoratakeTooltipProbe]::IsWindowVisible($handoffOverlay)
+            $hasRgn = [PoratakeTooltipProbe]::WindowHasCustomRegion($handoffOverlay)
+            $rect = New-Object PoratakeTooltipProbe+Rect
+            $gotRect = [PoratakeTooltipProbe]::GetWindowRect($handoffOverlay, [ref]$rect)
+            $script:parkedDiagnostic = "visible=$vis hasRegion=$hasRgn gotRect=$gotRect rect=$($rect.Left),$($rect.Top),$($rect.Right),$($rect.Bottom) exited=$($handoffApplication.HasExited)"
+            if (-not $vis -and -not $hasRgn) { return $true }
+        } catch {
+            $script:parkedDiagnostic = "exception=$($_.Exception.Message)"
+        }
         return $null
-    } 15000 'Stopping the recording did not restore and park the pooled selector region.'
-    if (-not $parkedRegionReady) { throw 'The parked selector did not clear its window region.' }
+    } 15000 $null
+    if (-not $parkedRegionReady) { throw "Stopping the recording did not restore and park the pooled selector region ($script:parkedDiagnostic)." }
     [PoratakeTooltipProbe]::PressRecordingAreaHotkey()
     $reopenedHandoffOverlay = Wait-Until {
         if (-not [PoratakeTooltipProbe]::IsWindowVisible($handoffOverlay)) { return $null }
