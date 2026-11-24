@@ -262,34 +262,25 @@ impl SettingsWindow {
     /// `handleCheckForUpdates`. The request happens off the UI thread; the
     /// result is published into the shared cell and the window redrawn.
     pub fn check_for_updates(&mut self, cx: &mut Context<Self>) {
+        self.check_for_updates_with(cx, || crate::update::check(crate::product::VERSION));
+    }
+
+    fn check_for_updates_with(
+        &mut self,
+        cx: &mut Context<Self>,
+        check: impl FnOnce() -> crate::update::Status + Send + 'static,
+    ) {
         if let Ok(mut cell) = self.update.lock() {
-            if matches!(
-                cell.status(),
-                crate::update::Status::Checking
-                    | crate::update::Status::Downloading { .. }
-                    | crate::update::Status::Ready { .. }
-                    | crate::update::Status::Unsupported
-            ) {
+            if !crate::update::should_auto_check(&cell.status()) {
                 return;
             }
             cell.publish(crate::update::Status::Checking);
         }
         cx.notify();
 
-        let shared = self.update.clone();
-        cx.spawn(async move |entity, cx| {
-            let result = cx
-                .background_executor()
-                .spawn(async move { crate::update::check(crate::product::VERSION) })
-                .await;
-            if let Ok(mut cell) = shared.lock() {
-                cell.publish(result);
-            }
-            let _ = entity.update(cx, |_, cx| {
-                crate::update::sync_tray_status(cx);
-                crate::update::start_download(cx);
-                cx.notify();
-            });
+        cx.spawn(async move |_, cx| {
+            let result = cx.background_executor().spawn(async move { check() }).await;
+            cx.update(|cx| crate::update::publish_check(result, cx));
         })
         .detach();
     }
@@ -1249,6 +1240,7 @@ mod tests {
 #[cfg(test)]
 mod render_tests {
     use super::*;
+    use crate::windows::registry::{is_open, remember, WindowKind};
 
     #[herogpui::test]
     fn settings_mutation_preserves_preferences_changed_by_another_window(
@@ -1338,6 +1330,74 @@ mod render_tests {
         assert_eq!(content_drag.left(), px(SIDEBAR_WIDTH));
         assert_eq!(content_drag.top(), px(0.0));
     }
+
+    fn open_about(
+        cx: &mut gpui::TestAppContext,
+    ) -> (tempfile::TempDir, gpui::WindowHandle<SettingsWindow>) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store =
+            Arc::new(ConfigStore::load_at(dir.path().join("config.json")).expect("load config"));
+        cx.update(|cx| crate::state::set_test_state(cx, store.clone()));
+        let window = cx.add_window(|_, cx| SettingsWindow::new(store, Category::About, cx));
+        cx.update(|cx| remember(WindowKind::Settings, window.into(), cx));
+        (dir, window)
+    }
+
+    #[herogpui::test]
+    fn checking_for_updates_from_about_survives_a_found_update(cx: &mut gpui::TestAppContext) {
+        let (_dir, window) = open_about(cx);
+
+        window
+            .update(cx, |settings, _, cx| {
+                settings.check_for_updates_with(cx, || crate::update::available("9.9.9"))
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        let status = cx.update(|cx| crate::update::current_status(cx));
+        assert!(
+            !matches!(
+                status,
+                crate::update::Status::Checking | crate::update::Status::Available { .. }
+            ),
+            "a found update must move on to the download, got {status:?}"
+        );
+        assert!(
+            cx.update(|cx| is_open(WindowKind::Settings, cx)),
+            "the settings window must stay registered"
+        );
+    }
+
+    #[herogpui::test]
+    fn the_download_button_starts_the_download_from_inside_the_window(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (_dir, window) = open_about(cx);
+        cx.update(|cx| {
+            crate::state::update_cell(cx)
+                .lock()
+                .expect("update cell")
+                .publish(crate::update::available("9.9.9"))
+        });
+
+        window
+            .update(cx, |settings, _, cx| settings.download_update(cx))
+            .unwrap();
+
+        let status = cx.update(|cx| crate::update::current_status(cx));
+        assert!(
+            matches!(
+                status,
+                crate::update::Status::Downloading { progress: 0.0, .. }
+            ),
+            "the button must start the download, got {status:?}"
+        );
+        assert!(
+            cx.update(|cx| is_open(WindowKind::Settings, cx)),
+            "the settings window must stay registered"
+        );
+        cx.run_until_parked();
+    }
 }
 
 impl SettingsWindow {
@@ -1345,6 +1405,7 @@ impl SettingsWindow {
     /// has not already moved the cell off `Available`.
     pub fn download_update(&mut self, cx: &mut Context<Self>) {
         crate::update::start_download(cx);
+        cx.notify();
     }
 
     /// `quitAndInstall`: hand over to the installer, then leave -- NSIS cannot
