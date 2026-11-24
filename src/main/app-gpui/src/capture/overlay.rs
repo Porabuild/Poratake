@@ -482,6 +482,12 @@ pub fn replace_all(cx: &mut App) -> Option<u64> {
 
 fn remove_all(cx: &mut App, deferred: bool) -> Option<u64> {
     let (handles, generation) = take_all(cx);
+    #[cfg(windows)]
+    eprintln!(
+        "[park-diag] remove_all deferred={deferred} tracked={} pooled={}",
+        handles.len(),
+        session(cx).pooled.len()
+    );
     if deferred {
         App::defer(cx, move |cx| dispose_overlays(handles, cx));
     } else {
@@ -519,6 +525,15 @@ fn dispose_overlays(handles: Vec<TrackedOverlay>, cx: &mut App) {
     let mut parked = false;
     for tracked in handles {
         #[cfg(windows)]
+        eprintln!(
+            "[park-diag] dispose display={:?} pooled_same_display={}",
+            tracked.display_id.map(u64::from),
+            tracked.display_id.is_some_and(|id| session(cx)
+                .pooled
+                .iter()
+                .any(|entry| entry.display_id == id))
+        );
+        #[cfg(windows)]
         if let (Some(display_id), Some(handle)) =
             (tracked.display_id, tracked.handle.downcast::<AreaOverlay>())
         {
@@ -532,6 +547,10 @@ fn dispose_overlays(handles: Vec<TrackedOverlay>, cx: &mut App) {
                         overlay.reset_for_park(window, cx);
                         cx.notify();
                         if !needs_clear {
+                            eprintln!(
+                                "[park-diag] park immediate hwnd={:#x}",
+                                park_diag_hwnd(window)
+                            );
                             park_overlay(window);
                             return;
                         }
@@ -580,6 +599,8 @@ fn dispose_overlays(handles: Vec<TrackedOverlay>, cx: &mut App) {
                 continue;
             }
         }
+        #[cfg(windows)]
+        eprintln!("[park-diag] dispose destroy");
         let _ = tracked.handle.update(cx, |_, window, _| {
             #[cfg(target_os = "macos")]
             crate::system::window_visibility::hide(window);
