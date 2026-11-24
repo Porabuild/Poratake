@@ -2005,6 +2005,16 @@ impl Window {
                 }
 
                 let pending_next_frame_callbacks = next_frame_callbacks.take();
+                #[cfg(windows)]
+                {
+                    if !pending_next_frame_callbacks.is_empty() {
+                        eprintln!(
+                            "[park-diag] gpui frame window={:?} pending={}",
+                            handle.window_id(),
+                            pending_next_frame_callbacks.len()
+                        );
+                    }
+                }
                 if !pending_next_frame_callbacks.is_empty() {
                     handle
                         .update(&mut cx, |_, window, cx| {

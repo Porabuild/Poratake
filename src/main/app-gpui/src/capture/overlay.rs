@@ -1213,18 +1213,37 @@ fn schedule_park_hide(
     park_generation: u64,
     window: &mut Window,
 ) {
+    eprintln!(
+        "[park-diag] schedule hwnd={:#x} gen={park_generation}",
+        park_diag_hwnd(window)
+    );
     after_next_present(window, move |window, cx| {
+        eprintln!(
+            "[park-diag] stage2 hwnd={:#x} gen={park_generation}",
+            park_diag_hwnd(window)
+        );
         let Some(view) = view.upgrade() else {
+            eprintln!("[park-diag] view gone");
             return;
         };
         view.update(cx, |overlay, _| {
             if !overlay.parked || overlay.park_generation != park_generation {
+                eprintln!(
+                    "[park-diag] skipped parked={} gen={}",
+                    overlay.parked, overlay.park_generation
+                );
                 return;
             }
             overlay.surface_state = PooledSurfaceState::Clean;
+            eprintln!("[park-diag] parking hwnd={:#x}", park_diag_hwnd(window));
             park_overlay(window);
         });
     });
+}
+
+#[cfg(windows)]
+fn park_diag_hwnd(window: &Window) -> usize {
+    crate::windows::window_hwnd(window).map_or(0, |hwnd| hwnd.0 as usize)
 }
 
 #[cfg(all(windows, not(test)))]

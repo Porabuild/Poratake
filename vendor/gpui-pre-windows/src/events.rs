@@ -1436,7 +1436,20 @@ impl WindowsWindowInner {
 
     #[inline]
     fn draw_window(&self, handle: HWND, force_render: bool) -> Option<isize> {
+        let diag_cloaked = park_diag_is_cloaked(handle);
+        if diag_cloaked {
+            eprintln!(
+                "[park-diag] draw attempt cloaked hwnd={:#x}",
+                handle.0 as usize
+            );
+        }
         let Some(_guard) = self.state.draw_coordinator.try_begin_draw() else {
+            if diag_cloaked {
+                eprintln!(
+                    "[park-diag] draw deferred (re-entrant) cloaked hwnd={:#x}",
+                    handle.0 as usize
+                );
+            }
             log::debug!("deferring re-entrant draw of window {handle:?}");
             if force_render {
                 self.state.force_render_pending.set(true);
@@ -1450,7 +1463,15 @@ impl WindowsWindowInner {
             unsafe { ValidateRect(Some(handle), None).ok().log_err() };
             return Some(0);
         };
-        let mut request_frame = self.state.callbacks.request_frame.take()?;
+        let taken_request_frame = self.state.callbacks.request_frame.take();
+        if diag_cloaked {
+            eprintln!(
+                "[park-diag] draw cloaked hwnd={:#x} request_frame_available={}",
+                handle.0 as usize,
+                taken_request_frame.is_some()
+            );
+        }
+        let mut request_frame = taken_request_frame?;
 
         self.state.direct_manipulation.update();
 
@@ -1935,4 +1956,19 @@ fn notify_frame_changed(handle: HWND) {
         )
         .log_err();
     }
+}
+
+fn park_diag_is_cloaked(handle: HWND) -> bool {
+    use windows::Win32::Graphics::Dwm::{DWMWA_CLOAKED, DwmGetWindowAttribute};
+
+    let mut cloaked = 0u32;
+    let queried = unsafe {
+        DwmGetWindowAttribute(
+            handle,
+            DWMWA_CLOAKED,
+            (&mut cloaked as *mut u32).cast(),
+            std::mem::size_of::<u32>() as u32,
+        )
+    };
+    queried.is_ok() && cloaked != 0
 }
