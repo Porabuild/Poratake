@@ -1457,6 +1457,7 @@ fn open_overlay_window(
                         hide_overlay_without_shrinking(window);
                     }
                     prepare_overlay_window(window, display_bounds);
+                    window.bounds_changed(cx);
                     if !launch.deferred_show {
                         set_overlay_hole(window, None);
                     }

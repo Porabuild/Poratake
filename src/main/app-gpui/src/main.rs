@@ -401,7 +401,7 @@ fn main() {
         let events = bridge.events();
         state::set_native(cx, bridge);
         #[cfg(any(windows, target_os = "macos"))]
-        cx.defer(capture::overlay::prewarm);
+        capture::overlay::prewarm(cx);
         crate::update::spawn_auto_check(cx);
 
         cx.spawn(async move |cx| {

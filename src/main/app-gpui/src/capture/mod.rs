@@ -727,47 +727,53 @@ fn with_frozen_screen(
     overlay::set_pending_freeze(generation, cx);
     let freezing = service.clone();
     let freezer = freezing.clone();
-    // Start the daemon freeze on the background executor *before* preparing the
-    // hidden overlay on the main thread so screen capture and window prep run
-    // concurrently instead of back-to-back.
-    let freeze_task = cx.background_executor().spawn(async move {
-        freezer.wait_for_freeze_turn(generation);
-        let hide_failure = match gate {
-            Some(gate) => match gate.recv().await {
-                Ok(Err(error)) => Some(error),
-                Ok(Ok(())) | Err(_) => None,
-            },
-            None => None,
-        };
-        let _operation = freezer.freeze.operation.lock();
-        let release = |generation| {
-            freezer.release_generation(generation, freezer.freeze.state.lock(), || {
-                freezer.release_screen_started()
-            })
-        };
-        let released = release_first.is_none_or(release);
-        let result = if !released {
-            Err(anyhow::anyhow!("Could not release the frozen screen"))
-        } else if let Some(error) = hide_failure.as_ref() {
-            Err(anyhow::anyhow!(error.clone()))
-        } else {
-            freezer.freeze_screen_started()
-        };
-        let released = released && (result.is_ok() || release(generation));
-        (
-            freezer.finish_freeze(generation, result),
-            released,
-            hide_failure,
-        )
-    });
+    let executor = cx.background_executor().clone();
+    let start_freeze = move || {
+        executor.spawn(async move {
+            freezer.wait_for_freeze_turn(generation);
+            let hide_failure = match gate {
+                Some(gate) => match gate.recv().await {
+                    Ok(Err(error)) => Some(error),
+                    Ok(Ok(())) | Err(_) => None,
+                },
+                None => None,
+            };
+            let _operation = freezer.freeze.operation.lock();
+            let release = |generation| {
+                freezer.release_generation(generation, freezer.freeze.state.lock(), || {
+                    freezer.release_screen_started()
+                })
+            };
+            let released = release_first.is_none_or(release);
+            let result = if !released {
+                Err(anyhow::anyhow!("Could not release the frozen screen"))
+            } else if let Some(error) = hide_failure.as_ref() {
+                Err(anyhow::anyhow!(error.clone()))
+            } else {
+                freezer.freeze_screen_started()
+            };
+            let released = released && (result.is_ok() || release(generation));
+            (
+                freezer.finish_freeze(generation, result),
+                released,
+                hide_failure,
+            )
+        })
+    };
+    #[cfg(not(all(test, windows)))]
+    let freeze_task = start_freeze();
     let mut open = Some(open);
     let opened_early = deferred_show.then(|| open.take().unwrap()(cx, true, generation));
     cx.spawn(async move |cx| {
         #[cfg(all(test, windows))]
-        freezing
-            .freeze
-            .scheduled_for_test
-            .store(generation, std::sync::atomic::Ordering::SeqCst);
+        {
+            freezing
+                .freeze
+                .scheduled_for_test
+                .store(generation, std::sync::atomic::Ordering::SeqCst);
+        }
+        #[cfg(all(test, windows))]
+        let freeze_task = start_freeze();
         let (frozen, released, hide_failure) = freeze_task.await;
         let failure = if released {
             hide_failure
