@@ -3836,16 +3836,36 @@ try {
     if (-not [PoratakeTooltipProbe]::SetForegroundWindow($handoffFreezeControlState.Selector)) { throw 'Could not foreground the Freeze Screen positive-control selector for cancellation.' }
     Wait-Until { [PoratakeTooltipProbe]::GetForegroundWindow() -eq $handoffFreezeControlState.Selector } 3000 'The Freeze Screen positive-control selector did not become the foreground input target.' | Out-Null
     [PoratakeTooltipProbe]::PressKey(0x1B)
-    Wait-Until {
+    $handoffFreezeCancelState = @{ selectorVisible = $null; selectorCloaked = $null; freezeVisibleCount = $null; releaseTraced = $null; overlayWindows = '' }
+    $handoffFreezeReleased = Wait-Until {
         $selectorVisible = [PoratakeTooltipProbe]::IsWindowVisible($handoffFreezeControlState.Selector)
-        $freezeVisible = @([PoratakeTooltipProbe]::Windows([uint32]$handoffFreezeControlState.Daemon.ProcessId) | Where-Object {
+        $selectorCloakedValue = -1
+        $selectorCloakedResult = [PoratakeTooltipProbe]::DwmGetWindowAttribute($handoffFreezeControlState.Selector, 14, [ref]$selectorCloakedValue, 4)
+        $selectorCloaked = $selectorCloakedResult -eq 0 -and $selectorCloakedValue -ne 0
+        $freezeVisibleCount = @([PoratakeTooltipProbe]::Windows([uint32]$handoffFreezeControlState.Daemon.ProcessId) | Where-Object {
             [PoratakeTooltipProbe]::IsWindowVisible($_) -and [PoratakeTooltipProbe]::ClassName($_) -ceq 'PoratakeFreezeOverlay'
-        }).Count -gt 0
-        if ($selectorVisible -or $freezeVisible) { return $null }
+        }).Count
         $lines = if (Test-Path -LiteralPath $handoffFreezeControlTracePath) { @(Get-Content -LiteralPath $handoffFreezeControlTracePath) } else { @() }
-        if (-not ($lines | Where-Object { $_ -match 'route freeze-screen release$' })) { return $null }
+        $releaseTraced = [bool]($lines | Where-Object { $_ -match 'route freeze-screen release$' })
+        $overlayWindows = @([PoratakeTooltipProbe]::Windows([uint32]$handoffFreezeControlApplication.Id) | Where-Object {
+            [PoratakeTooltipProbe]::WindowText($_) -ceq 'Poratake capture overlay'
+        } | ForEach-Object {
+            $windowCloakedValue = -1
+            [void][PoratakeTooltipProbe]::DwmGetWindowAttribute($_, 14, [ref]$windowCloakedValue, 4)
+            "hwnd=$($_.ToInt64()) visible=$([PoratakeTooltipProbe]::IsWindowVisible($_)) cloaked=$($windowCloakedValue -ne 0)"
+        })
+        $handoffFreezeCancelState.selectorVisible = $selectorVisible
+        $handoffFreezeCancelState.selectorCloaked = $selectorCloaked
+        $handoffFreezeCancelState.freezeVisibleCount = $freezeVisibleCount
+        $handoffFreezeCancelState.releaseTraced = $releaseTraced
+        $handoffFreezeCancelState.overlayWindows = $overlayWindows -join '; '
+        if ($selectorVisible -or ($freezeVisibleCount -gt 0) -or (-not $releaseTraced)) { return $null }
         return $true
-    } 10000 'Cancelling the Freeze Screen positive control did not release its daemon overlay.' | Out-Null
+    } 10000 $null
+    if (-not $handoffFreezeReleased) {
+        throw "Cancelling the Freeze Screen positive control did not release its daemon overlay: selectorVisible=$($handoffFreezeCancelState.selectorVisible), selectorCloaked=$($handoffFreezeCancelState.selectorCloaked), freezeWindowsVisible=$($handoffFreezeCancelState.freezeVisibleCount), releaseTraced=$($handoffFreezeCancelState.releaseTraced), appOverlayWindows=[$($handoffFreezeCancelState.overlayWindows)]."
+    }
+    Write-Host "Freeze Screen positive control cancelled: selector visible=$($handoffFreezeCancelState.selectorVisible), cloaked=$($handoffFreezeCancelState.selectorCloaked), daemon freeze windows visible=$($handoffFreezeCancelState.freezeVisibleCount), appOverlayWindows=[$($handoffFreezeCancelState.overlayWindows)]."
     Capture-OwnedDaemonChildren $handoffFreezeControlApplication
     $handoffFreezeControlParentId = $handoffFreezeControlApplication.Id
     if (-not $handoffFreezeControlApplication.HasExited) {
