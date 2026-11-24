@@ -519,6 +519,7 @@ impl WindowsPlatform {
             .name("VSyncProvider".to_owned())
             .spawn(move || {
                 let vsync_provider = VSyncProvider::new();
+                let mut diag_tick = 0u64;
                 loop {
                     if stop.load(Ordering::Acquire) {
                         break;
@@ -535,11 +536,21 @@ impl WindowsPlatform {
                     };
                     drop(all_windows_strong);
                     if !has_active_window && !invalidate_devices.load(Ordering::Acquire) {
+                        eprintln!("[park-diag] vsync idle wait");
                         vsync_wake.wait(&stop);
+                        eprintln!("[park-diag] vsync woke");
                         continue;
                     }
 
+                    diag_tick += 1;
+                    let diag_log = diag_tick % 30 == 0;
+                    if diag_log {
+                        eprintln!("[park-diag] vsync before-wait tick={diag_tick}");
+                    }
                     let signal_source = vsync_provider.wait_for_vsync();
+                    if diag_log {
+                        eprintln!("[park-diag] vsync after-wait tick={diag_tick}");
+                    }
                     let signal_at = PlatformFrameSignal::capture(scheduler::Instant::now);
                     if stop.load(Ordering::Acquire) {
                         break;
