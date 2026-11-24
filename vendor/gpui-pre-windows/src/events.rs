@@ -85,6 +85,9 @@ impl WindowsWindowInner {
         wparam: WPARAM,
         lparam: LPARAM,
     ) -> LRESULT {
+        if msg == WM_NULL {
+            eprintln!("[park-diag] main-thread pulse t={}ms", park_diag_time_ms());
+        }
         let handled = match msg {
             // `DefWindowProc` answers `MA_NOACTIVATE` for a left click on `HTCAPTION`.
             // The activation is only triggered when `DefWindowProc` handles the following `WM_NCLBUTTONDOWN`.
@@ -1357,6 +1360,12 @@ impl WindowsWindowInner {
         handle: HWND,
         wparam: WPARAM,
     ) -> Option<isize> {
+        eprintln!(
+            "[park-diag] visibility hwnd={:#x} shown={} t={}ms",
+            handle.0 as usize,
+            wparam.0,
+            park_diag_time_ms()
+        );
         self.report_visibility();
         if wparam.0 == 1 {
             self.vsync_wake.notify();
@@ -1439,8 +1448,9 @@ impl WindowsWindowInner {
         let diag_cloaked = park_diag_is_cloaked(handle);
         if diag_cloaked {
             eprintln!(
-                "[park-diag] draw attempt cloaked hwnd={:#x}",
-                handle.0 as usize
+                "[park-diag] draw attempt cloaked hwnd={:#x} t={}ms",
+                handle.0 as usize,
+                park_diag_time_ms()
             );
         }
         let Some(_guard) = self.state.draw_coordinator.try_begin_draw() else {
@@ -1958,7 +1968,7 @@ fn notify_frame_changed(handle: HWND) {
     }
 }
 
-fn park_diag_is_cloaked(handle: HWND) -> bool {
+pub(crate) fn park_diag_is_cloaked(handle: HWND) -> bool {
     use windows::Win32::Graphics::Dwm::{DWMWA_CLOAKED, DwmGetWindowAttribute};
 
     let mut cloaked = 0u32;
@@ -1971,4 +1981,10 @@ fn park_diag_is_cloaked(handle: HWND) -> bool {
         )
     };
     queried.is_ok() && cloaked != 0
+}
+
+pub(crate) fn park_diag_time_ms() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis())
 }

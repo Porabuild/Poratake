@@ -484,9 +484,10 @@ fn remove_all(cx: &mut App, deferred: bool) -> Option<u64> {
     let (handles, generation) = take_all(cx);
     #[cfg(windows)]
     eprintln!(
-        "[park-diag] remove_all deferred={deferred} tracked={} pooled={}",
+        "[park-diag] remove_all deferred={deferred} tracked={} pooled={} t={}ms",
         handles.len(),
-        session(cx).pooled.len()
+        session(cx).pooled.len(),
+        park_diag_time_ms()
     );
     if deferred {
         App::defer(cx, move |cx| dispose_overlays(handles, cx));
@@ -526,12 +527,13 @@ fn dispose_overlays(handles: Vec<TrackedOverlay>, cx: &mut App) {
     for tracked in handles {
         #[cfg(windows)]
         eprintln!(
-            "[park-diag] dispose display={:?} pooled_same_display={}",
+            "[park-diag] dispose display={:?} pooled_same_display={} t={}ms",
             tracked.display_id.map(u64::from),
             tracked.display_id.is_some_and(|id| session(cx)
                 .pooled
                 .iter()
-                .any(|entry| entry.display_id == id))
+                .any(|entry| entry.display_id == id)),
+            park_diag_time_ms()
         );
         #[cfg(windows)]
         if let (Some(display_id), Some(handle)) =
@@ -548,8 +550,9 @@ fn dispose_overlays(handles: Vec<TrackedOverlay>, cx: &mut App) {
                         cx.notify();
                         if !needs_clear {
                             eprintln!(
-                                "[park-diag] park immediate hwnd={:#x}",
-                                park_diag_hwnd(window)
+                                "[park-diag] park immediate hwnd={:#x} t={}ms",
+                                park_diag_hwnd(window),
+                                park_diag_time_ms()
                             );
                             park_overlay(window);
                             return;
@@ -600,7 +603,7 @@ fn dispose_overlays(handles: Vec<TrackedOverlay>, cx: &mut App) {
             }
         }
         #[cfg(windows)]
-        eprintln!("[park-diag] dispose destroy");
+        eprintln!("[park-diag] dispose destroy t={}ms", park_diag_time_ms());
         let _ = tracked.handle.update(cx, |_, window, _| {
             #[cfg(target_os = "macos")]
             crate::system::window_visibility::hide(window);
@@ -1235,13 +1238,15 @@ fn schedule_park_hide(
     window: &mut Window,
 ) {
     eprintln!(
-        "[park-diag] schedule hwnd={:#x} gen={park_generation}",
-        park_diag_hwnd(window)
+        "[park-diag] schedule hwnd={:#x} gen={park_generation} t={}ms",
+        park_diag_hwnd(window),
+        park_diag_time_ms()
     );
     after_next_present(window, move |window, cx| {
         eprintln!(
-            "[park-diag] stage2 hwnd={:#x} gen={park_generation}",
-            park_diag_hwnd(window)
+            "[park-diag] stage2 hwnd={:#x} gen={park_generation} t={}ms",
+            park_diag_hwnd(window),
+            park_diag_time_ms()
         );
         let Some(view) = view.upgrade() else {
             eprintln!("[park-diag] view gone");
@@ -1256,7 +1261,11 @@ fn schedule_park_hide(
                 return;
             }
             overlay.surface_state = PooledSurfaceState::Clean;
-            eprintln!("[park-diag] parking hwnd={:#x}", park_diag_hwnd(window));
+            eprintln!(
+                "[park-diag] parking hwnd={:#x} t={}ms",
+                park_diag_hwnd(window),
+                park_diag_time_ms()
+            );
             park_overlay(window);
         });
     });
@@ -1265,6 +1274,13 @@ fn schedule_park_hide(
 #[cfg(windows)]
 fn park_diag_hwnd(window: &Window) -> usize {
     crate::windows::window_hwnd(window).map_or(0, |hwnd| hwnd.0 as usize)
+}
+
+#[cfg(windows)]
+fn park_diag_time_ms() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis())
 }
 
 #[cfg(all(windows, not(test)))]
@@ -1456,8 +1472,16 @@ fn open_overlay_window(
                     if launch.deferred_show {
                         hide_overlay_without_shrinking(window);
                     }
+                    let diag_viewport = window.viewport_size();
                     prepare_overlay_window(window, display_bounds);
                     window.bounds_changed(cx);
+                    eprintln!(
+                        "[park-diag] reuse hwnd={:#x} viewport={:?}->{:?} t={}ms",
+                        park_diag_hwnd(window),
+                        diag_viewport,
+                        window.viewport_size(),
+                        park_diag_time_ms()
+                    );
                     if !launch.deferred_show {
                         set_overlay_hole(window, None);
                     }
@@ -3636,7 +3660,14 @@ impl AreaOverlay {
         let bounds = self.viewport();
         let point = selection::clamp_point(self.to_selection_point(event.position), bounds);
 
-        match selection::gesture_at(self.rect, point) {
+        let gesture = selection::gesture_at(self.rect, point);
+        #[cfg(windows)]
+        eprintln!(
+            "[park-diag] overlay down pos={:?} gesture={gesture:?} t={}ms",
+            event.position,
+            park_diag_time_ms()
+        );
+        match gesture {
             selection::Gesture::Resize { handle } => {
                 self.interaction = Some(Interaction::Resizing { handle });
                 self.cursor = handle.cursor();
@@ -3796,6 +3827,12 @@ impl AreaOverlay {
         }
         self.drag_to(event.position, cx);
         let Some(interaction) = self.interaction.take() else {
+            #[cfg(windows)]
+            eprintln!(
+                "[park-diag] overlay up without gesture pos={:?} t={}ms",
+                event.position,
+                park_diag_time_ms()
+            );
             return;
         };
 
