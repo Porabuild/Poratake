@@ -519,7 +519,6 @@ impl WindowsPlatform {
             .name("VSyncProvider".to_owned())
             .spawn(move || {
                 let vsync_provider = VSyncProvider::new();
-                let mut diag_tick = 0u64;
                 loop {
                     if stop.load(Ordering::Acquire) {
                         break;
@@ -527,36 +526,20 @@ impl WindowsPlatform {
                     let Some(all_windows_strong) = all_windows.upgrade() else {
                         break;
                     };
-                    let (has_active_window, diag_any_cloaked) = {
+                    let has_active_window = {
                         let guard = all_windows_strong.read();
-                        park_diag_active_windows(&guard)
+                        guard.iter().any(|hwnd| unsafe {
+                            IsWindowVisible(hwnd.as_raw()).as_bool()
+                                && !IsIconic(hwnd.as_raw()).as_bool()
+                        })
                     };
                     drop(all_windows_strong);
                     if !has_active_window && !invalidate_devices.load(Ordering::Acquire) {
-                        eprintln!(
-                            "[park-diag] vsync idle wait t={}ms",
-                            park_diag_time_ms()
-                        );
                         vsync_wake.wait(&stop);
-                        eprintln!("[park-diag] vsync woke t={}ms", park_diag_time_ms());
                         continue;
                     }
 
-                    diag_tick += 1;
-                    let diag_log = diag_tick % 30 == 0 || diag_any_cloaked;
-                    if diag_log {
-                        eprintln!(
-                            "[park-diag] vsync before-wait tick={diag_tick} cloaked={diag_any_cloaked} t={}ms",
-                            park_diag_time_ms()
-                        );
-                    }
                     let signal_source = vsync_provider.wait_for_vsync();
-                    if diag_log {
-                        eprintln!(
-                            "[park-diag] vsync after-wait tick={diag_tick} t={}ms",
-                            park_diag_time_ms()
-                        );
-                    }
                     let signal_at = PlatformFrameSignal::capture(scheduler::Instant::now);
                     if stop.load(Ordering::Acquire) {
                         break;
@@ -564,7 +547,6 @@ impl WindowsPlatform {
                     if check_device_lost(&directx_device.device)
                         || invalidate_devices.fetch_and(false, Ordering::Acquire)
                     {
-                        eprintln!("[park-diag] vsync device recovery t={}ms", park_diag_time_ms());
                         if let Err(err) = handle_gpu_device_lost(
                             &mut directx_device,
                             platform_window.as_raw(),
@@ -589,44 +571,15 @@ impl WindowsPlatform {
                             if let Some(signal_at) = signal_at {
                                 hwnd.frame_signal.record(signal_at, signal_source);
                             }
-                            let redrawn =
-                                RedrawWindow(Some(hwnd.as_raw()), None, None, RDW_INVALIDATE);
-                            redrawn.ok().log_err();
-                            if park_diag_is_cloaked(hwnd.as_raw()) {
-                                let mut update = RECT::default();
-                                let pending = GetUpdateRect(hwnd.as_raw(), Some(&mut update), false);
-                                eprintln!(
-                                    "[park-diag] vsync invalidate hwnd={:#x} redraw={} update={} rect={},{}-{},{} t={}ms",
-                                    hwnd.as_raw().0 as usize,
-                                    redrawn.as_bool(),
-                                    pending.as_bool(),
-                                    update.left,
-                                    update.top,
-                                    update.right,
-                                    update.bottom,
-                                    park_diag_time_ms()
-                                );
-                            }
+                            RedrawWindow(Some(hwnd.as_raw()), None, None, RDW_INVALIDATE)
+                                .ok()
+                                .log_err();
                         }
                     }
                 }
             })
             .unwrap();
     }
-}
-
-fn park_diag_active_windows(windows: &SmallVec<[TrackedWindow; 4]>) -> (bool, bool) {
-    let mut active = false;
-    let mut cloaked = false;
-    for hwnd in windows {
-        unsafe {
-            if IsWindowVisible(hwnd.as_raw()).as_bool() && !IsIconic(hwnd.as_raw()).as_bool() {
-                active = true;
-                cloaked |= park_diag_is_cloaked(hwnd.as_raw());
-            }
-        }
-    }
-    (active, cloaked)
 }
 
 fn encode_restart_arguments(arguments: &[OsString]) -> OsString {
