@@ -28,6 +28,7 @@ pub(crate) const WM_GPUI_FORCE_UPDATE_WINDOW: u32 = WM_USER + 5;
 pub(crate) const WM_GPUI_KEYBOARD_LAYOUT_CHANGED: u32 = WM_USER + 6;
 pub(crate) const WM_GPUI_GPU_DEVICE_LOST: u32 = WM_USER + 7;
 pub(crate) const WM_GPUI_DISPLAYS_CHANGED: u32 = WM_USER + 10;
+pub(crate) const WM_GPUI_VSYNC_WAKE: u32 = WM_USER + 11;
 
 const SIZE_MOVE_LOOP_TIMER_ID: usize = 1;
 
@@ -160,6 +161,10 @@ impl WindowsWindowInner {
             WM_GPUI_CURSOR_STYLE_CHANGED
             | WM_GPUI_FORCE_UPDATE_WINDOW
             | WM_GPUI_GPU_DEVICE_LOST => self.handle_gpui_events(handle, msg, wparam, lparam),
+            WM_GPUI_VSYNC_WAKE if wparam.0 == self.validation_number => {
+                self.vsync_wake.notify();
+                Some(0)
+            }
             _ => None,
         };
         if let Some(n) = handled {
@@ -1359,7 +1364,15 @@ impl WindowsWindowInner {
     ) -> Option<isize> {
         self.report_visibility();
         if wparam.0 == 1 {
-            self.vsync_wake.notify();
+            unsafe {
+                PostMessageW(
+                    Some(handle),
+                    WM_GPUI_VSYNC_WAKE,
+                    WPARAM(self.validation_number),
+                    LPARAM(0),
+                )
+                .log_err();
+            }
             self.draw_window(handle, false);
         }
         None

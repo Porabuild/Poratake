@@ -97,7 +97,6 @@ struct DaemonInner {
     pending: Mutex<HashMap<String, Pending>>,
     next_id: AtomicU64,
     shutting_down: AtomicBool,
-    parking: AtomicBool,
     restart_attempts: AtomicU32,
     event_handlers: Mutex<HashMap<u64, EventHandler>>,
     next_event_handler: AtomicU64,
@@ -233,7 +232,6 @@ impl DaemonHandle {
                 pending: Mutex::new(HashMap::new()),
                 next_id: AtomicU64::new(1),
                 shutting_down: AtomicBool::new(false),
-                parking: AtomicBool::new(false),
                 restart_attempts: AtomicU32::new(0),
                 event_handlers: Mutex::new(HashMap::new()),
                 next_event_handler: AtomicU64::new(1),
@@ -450,58 +448,6 @@ impl DaemonHandle {
         *guard = None;
         *self.inner.stdin.lock() = None;
         self.inner.reject_all_pending("Daemon stopped");
-    }
-
-    pub fn park_idle(&self) -> bool {
-        let _lifecycle = self.inner.lifecycle.lock();
-        if self.inner.shutting_down.load(Ordering::SeqCst) {
-            return false;
-        }
-        if self.inner.child.lock().is_none() {
-            return false;
-        }
-        let taken_stdin = {
-            let pending = self.inner.pending.lock();
-            if !pending.is_empty() {
-                return false;
-            }
-            self.inner.parking.store(true, Ordering::SeqCst);
-            self.inner.stdin.lock().take()
-        };
-        if let Some(mut stdin) = taken_stdin {
-            let line = "{\"id\":\"quit\",\"module\":\"system\",\"method\":\"quit\"}\n";
-            let _ = stdin.write_all(line.as_bytes());
-            let _ = stdin.flush();
-            drop(stdin);
-        }
-        let deadline = std::time::Instant::now() + Duration::from_millis(500);
-        loop {
-            let exited = {
-                let mut guard = self.inner.child.lock();
-                match guard.as_mut() {
-                    Some(child) => matches!(child.try_wait(), Ok(Some(_))),
-                    None => true,
-                }
-            };
-            if exited || std::time::Instant::now() >= deadline {
-                break;
-            }
-            thread::sleep(Duration::from_millis(10));
-        }
-        let mut guard = self.inner.child.lock();
-        if let Some(child) = guard.as_mut() {
-            if !matches!(child.try_wait(), Ok(Some(_))) {
-                if child.kill().is_ok() {
-                    let _ = child.wait();
-                } else {
-                    let _ = child.try_wait();
-                }
-            }
-        }
-        *guard = None;
-        drop(guard);
-        self.inner.parking.store(false, Ordering::SeqCst);
-        true
     }
 
     /// Calls `module.method`, returning the parsed `result`.
@@ -1581,19 +1527,12 @@ impl DaemonInner {
     }
 
     fn handle_exit(self: &Arc<Self>, pid: u32, startup: &SyncSender<DaemonStartup>) {
-        if self.parking.load(Ordering::SeqCst) {
-            let _ = startup.try_send(DaemonStartup::Exited);
-            return;
-        }
         {
             let mut child = self.child.lock();
             let Some(exited) = child.as_mut().filter(|child| child.id() == pid) else {
                 return;
             };
             if !matches!(exited.try_wait(), Ok(Some(_))) {
-                return;
-            }
-            if self.parking.load(Ordering::SeqCst) {
                 return;
             }
             *self.stdin.lock() = None;
@@ -1663,9 +1602,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn park_idle_is_a_noop_when_daemon_is_not_running() {
+    fn daemon_is_not_running_before_start() {
         let daemon = DaemonHandle::with_binary(PathBuf::new());
-        assert!(!daemon.park_idle());
         assert!(!daemon.is_running());
     }
 

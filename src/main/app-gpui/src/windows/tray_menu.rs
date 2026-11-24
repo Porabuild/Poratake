@@ -333,6 +333,7 @@ impl TrayMenuWindow {
         }
     }
 
+    #[cfg_attr(not(all(windows, test)), allow(dead_code))]
     pub(crate) fn evict_cached(cx: &mut App) {
         #[cfg(windows)]
         {

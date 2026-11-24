@@ -119,9 +119,7 @@ class FreezeScreenModule: Module {
         runLoopSource = nil
     }
     
-    private func captureFrame(for screen: NSScreen) -> (image: CGImage, rect: CGRect)? {
-        let screenFrame = screen.frame
-        let mainScreenHeight = NSScreen.screens.first?.frame.height ?? screenFrame.height
+    private func captureFrame(screenFrame: CGRect, mainScreenHeight: CGFloat) -> (image: CGImage, rect: CGRect)? {
         let captureRect = CGRect(
             x: screenFrame.origin.x,
             y: mainScreenHeight - screenFrame.origin.y - screenFrame.height,
@@ -145,27 +143,45 @@ class FreezeScreenModule: Module {
         removeOverlays()
 
         let started = CFAbsoluteTimeGetCurrent()
-        var captured: [(screen: NSScreen, frame: (image: CGImage, rect: CGRect))] = []
-        for screen in NSScreen.screens {
-            guard let frame = captureFrame(for: screen) else {
-                continue
+        let screens = NSScreen.screens
+        let mainScreenHeight = screens.first?.frame.height ?? 0
+        let screenFrames = screens.map(\.frame)
+
+        var capturedFrames = Array<(image: CGImage, rect: CGRect)?>(repeating: nil, count: screenFrames.count)
+        if screenFrames.count <= 1 {
+            for index in screenFrames.indices {
+                capturedFrames[index] = captureFrame(
+                    screenFrame: screenFrames[index],
+                    mainScreenHeight: mainScreenHeight
+                )
             }
-            captured.append((screen: screen, frame: frame))
+        } else {
+            capturedFrames.withUnsafeMutableBufferPointer { buffer in
+                DispatchQueue.concurrentPerform(iterations: screenFrames.count) { index in
+                    buffer[index] = captureFrame(
+                        screenFrame: screenFrames[index],
+                        mainScreenHeight: mainScreenHeight
+                    )
+                }
+            }
         }
         let capturedAt = CFAbsoluteTimeGetCurrent()
 
-        for entry in captured {
-            let screen = entry.screen
-            let frame = entry.frame
+        for index in screenFrames.indices {
+            guard let frame = capturedFrames[index] else {
+                continue
+            }
+            let screenFrame = screenFrames[index]
+            let scale = CGFloat(frame.image.width) / frame.rect.width
 
             FrozenFrameStore.store(FrozenFrame(
                 image: frame.image,
                 rect: frame.rect,
-                scale: CGFloat(frame.image.width) / frame.rect.width
+                scale: scale
             ))
 
             let window = NSWindow(
-                contentRect: screen.frame,
+                contentRect: screenFrame,
                 styleMask: .borderless,
                 backing: .buffered,
                 defer: false
@@ -173,10 +189,10 @@ class FreezeScreenModule: Module {
             
             window.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.overlayWindow)) - 1)
             
-            let contentView = NSView(frame: NSRect(origin: .zero, size: screen.frame.size))
+            let contentView = NSView(frame: NSRect(origin: .zero, size: screenFrame.size))
             let imageView = NSImageView(frame: contentView.bounds)
             imageView.autoresizingMask = [.width, .height]
-            imageView.image = NSImage(cgImage: frame.image, size: screen.frame.size)
+            imageView.image = NSImage(cgImage: frame.image, size: screenFrame.size)
             imageView.imageScaling = .scaleAxesIndependently
             
             contentView.addSubview(imageView)
@@ -186,7 +202,7 @@ class FreezeScreenModule: Module {
             window.ignoresMouseEvents = true
             window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
             window.animationBehavior = .none
-            
+
             CATransaction.begin()
             CATransaction.setDisableActions(true)
             window.orderFrontRegardless()
@@ -211,6 +227,9 @@ class FreezeScreenModule: Module {
         }
         if !overlayWindows.isEmpty { CATransaction.flush() }
         for window in overlayWindows {
+            for subview in window.contentView?.subviews ?? [] {
+                (subview as? NSImageView)?.image = nil
+            }
             window.orderOut(nil)
         }
         overlayWindows.removeAll()

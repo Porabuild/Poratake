@@ -528,9 +528,10 @@ impl WindowsPlatform {
                     };
                     let has_active_window = {
                         let guard = all_windows_strong.read();
-                        guard
-                            .iter()
-                            .any(|hwnd| !unsafe { IsIconic(hwnd.as_raw()).as_bool() })
+                        guard.iter().any(|hwnd| unsafe {
+                            IsWindowVisible(hwnd.as_raw()).as_bool()
+                                && !IsIconic(hwnd.as_raw()).as_bool()
+                        })
                     };
                     drop(all_windows_strong);
                     if !has_active_window && !invalidate_devices.load(Ordering::Acquire) {
@@ -561,17 +562,14 @@ impl WindowsPlatform {
                     };
                     for hwnd in all_windows.read().iter() {
                         unsafe {
-                            if IsIconic(hwnd.as_raw()).as_bool() {
+                            if !IsWindowVisible(hwnd.as_raw()).as_bool()
+                                || IsIconic(hwnd.as_raw()).as_bool()
+                            {
                                 hwnd.frame_signal.take();
                                 continue;
                             }
                             if let Some(signal_at) = signal_at {
-                                if IsWindowVisible(hwnd.as_raw()).as_bool() {
-                                    hwnd.frame_signal.record(signal_at, signal_source);
-                                } else {
-                                    // Hidden windows may not consume WM_PAINT until shown again.
-                                    hwnd.frame_signal.take();
-                                }
+                                hwnd.frame_signal.record(signal_at, signal_source);
                             }
                             RedrawWindow(Some(hwnd.as_raw()), None, None, RDW_INVALIDATE)
                                 .ok()

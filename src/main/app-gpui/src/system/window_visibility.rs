@@ -13,6 +13,28 @@ pub fn show(window: &Window) {
     platform_set_visible(window, true);
 }
 
+#[cfg(target_os = "macos")]
+pub fn show_overlay(window: &Window, focus: bool) {
+    #[cfg(not(test))]
+    {
+        use cocoa::base::nil;
+        use objc::{msg_send, sel, sel_impl};
+
+        let Some(ns_window) = appkit_window(window) else {
+            return;
+        };
+        unsafe {
+            if focus {
+                let _: () = msg_send![ns_window, makeKeyAndOrderFront: nil];
+            } else {
+                let _: () = msg_send![ns_window, orderFrontRegardless];
+            }
+        }
+    }
+    #[cfg(test)]
+    let _ = (window, focus);
+}
+
 #[cfg(all(windows, not(test)))]
 fn platform_set_visible(window: &Window, visible: bool) {
     use windows::Win32::Graphics::Dwm::DwmFlush;

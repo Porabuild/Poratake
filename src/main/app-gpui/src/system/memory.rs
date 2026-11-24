@@ -4,7 +4,6 @@ use gpui::{App, Global};
 use herogpui::gpui;
 
 const IDLE_RECLAIM_DELAY: Duration = Duration::from_secs(5);
-const IDLE_WINDOW_DROP_SETTLE: Duration = Duration::from_millis(120);
 
 #[cfg(target_os = "macos")]
 unsafe extern "C" {
@@ -100,6 +99,13 @@ fn is_app_idle(cx: &App) -> bool {
     cx.windows().len() <= cached_windows
 }
 
+fn is_current_idle(generation: u64, cx: &App) -> bool {
+    let current = cx
+        .try_global::<IdleReclaimState>()
+        .map_or(0, |state| state.generation);
+    current == generation && is_app_idle(cx)
+}
+
 pub fn schedule_idle_reclaim(cx: &mut App) {
     if crate::state::try_state(cx).is_none() {
         return;
@@ -120,73 +126,21 @@ pub fn schedule_idle_reclaim(cx: &mut App) {
     }
     cx.spawn(async move |cx| {
         cx.background_executor().timer(IDLE_RECLAIM_DELAY).await;
-        let should_settle = cx.update(|cx| {
-            let current = cx
-                .try_global::<IdleReclaimState>()
-                .map_or(0, |state| state.generation);
-            if current != generation || !is_app_idle(cx) {
-                return false;
+        cx.update(|cx| {
+            if !is_current_idle(generation, cx) {
+                return;
             }
             clear_transient_caches();
-            idle_state(cx).evicting = true;
-            crate::windows::tray_menu::TrayMenuWindow::evict_cached(cx);
-            crate::capture::overlay::evict_pooled(cx);
             crate::windows::capture_preview::CapturePreviewWindow::discard_idle(cx);
-            idle_state(cx).evicting = false;
-            true
-        });
-        if !should_settle {
-            return;
-        }
-        cx.background_executor()
-            .timer(IDLE_WINDOW_DROP_SETTLE)
-            .await;
-        let (detach_task, daemon_to_park) = cx.update(|cx| {
-            let current = cx
-                .try_global::<IdleReclaimState>()
-                .map_or(0, |state| state.generation);
-            if current != generation || !is_app_idle(cx) {
-                return (None, None);
+            #[cfg(all(target_os = "macos", not(test)))]
+            if crate::capture::overlay::pooled_count(cx) > 0 {
+                idle_state(cx).evicting = true;
+                crate::capture::overlay::evict_pooled(cx);
+                crate::capture::overlay::prewarm(cx);
+                idle_state(cx).evicting = false;
             }
-            #[cfg(all(windows, not(test)))]
-            let detach_task = (cx.windows().is_empty() && cx.graphical_environment().is_some())
-                .then(|| cx.request_windowing(gpui::WindowingRequest::Headless));
-            #[cfg(not(all(windows, not(test))))]
-            let detach_task: Option<gpui::Task<anyhow::Result<()>>> = None;
-
             reclaim_idle_memory();
-            #[cfg(all(windows, not(test)))]
-            let daemon = crate::state::try_state(cx)
-                .map(|service| service.daemon)
-                .filter(|daemon| daemon.is_running());
-            #[cfg(not(all(windows, not(test))))]
-            let daemon: Option<crate::daemon::DaemonHandle> = None;
-            (detach_task, daemon)
         });
-        if let Some(task) = detach_task {
-            let _ = task.await;
-        }
-        if let Some(daemon) = daemon_to_park {
-            cx.background_executor()
-                .spawn(async move {
-                    let _ = daemon.park_idle();
-                })
-                .await;
-        }
-        #[cfg(all(windows, not(test)))]
-        {
-            cx.background_executor()
-                .timer(IDLE_WINDOW_DROP_SETTLE)
-                .await;
-            cx.update(|cx| {
-                let current = cx
-                    .try_global::<IdleReclaimState>()
-                    .map_or(0, |state| state.generation);
-                if current == generation && is_app_idle(cx) {
-                    reclaim_idle_memory();
-                }
-            });
-        }
     })
     .detach();
 }
@@ -237,5 +191,30 @@ mod tests {
             0
         );
         assert_eq!(cx.read(crate::capture::overlay::pooled_count), 0);
+    }
+
+    #[cfg(any(windows, target_os = "macos"))]
+    #[herogpui::test]
+    fn idle_reclaim_never_evicts_warm_windows(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let config = std::sync::Arc::new(
+            crate::config::store::ConfigStore::load_at(dir.path().join("config.json"))
+                .expect("load config"),
+        );
+        cx.update(|cx| crate::state::set_test_state(cx, config));
+        #[cfg(windows)]
+        cx.update(crate::windows::tray_menu::TrayMenuWindow::prewarm);
+        cx.update(crate::capture::overlay::prewarm);
+        assert!(cx.read(super::is_app_idle));
+        assert!(cx.read(crate::capture::overlay::pooled_count) > 0);
+
+        cx.update(super::schedule_idle_reclaim);
+        cx.executor()
+            .advance_clock(std::time::Duration::from_secs(2 * 60 * 60));
+        cx.run_until_parked();
+
+        assert!(cx.read(crate::capture::overlay::pooled_count) > 0);
+        #[cfg(windows)]
+        assert!(cx.read(crate::windows::tray_menu::TrayMenuWindow::cached_hidden_count) > 0);
     }
 }

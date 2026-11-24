@@ -202,7 +202,7 @@ struct FreezeState {
     fail_next_release_for_test: std::sync::atomic::AtomicBool,
     #[cfg(all(test, windows))]
     release_attempts_for_test: std::sync::atomic::AtomicU64,
-    #[cfg(all(test, windows))]
+    #[cfg(all(test, any(windows, target_os = "macos")))]
     freeze_succeeds_for_test: std::sync::atomic::AtomicBool,
 }
 
@@ -350,7 +350,7 @@ impl CaptureService {
     }
 
     fn freeze_screen_started(&self) -> Result<()> {
-        #[cfg(all(test, windows))]
+        #[cfg(all(test, any(windows, target_os = "macos")))]
         if self
             .freeze
             .freeze_succeeds_for_test
@@ -716,7 +716,7 @@ fn with_frozen_screen(
         return;
     }
 
-    let deferred_show = cfg!(windows);
+    let deferred_show = cfg!(any(windows, target_os = "macos"));
     #[cfg(all(test, windows))]
     let deferred_show = deferred_show
         && !service
@@ -725,49 +725,54 @@ fn with_frozen_screen(
             .load(std::sync::atomic::Ordering::SeqCst);
     let generation = service.begin_freeze();
     overlay::set_pending_freeze(generation, cx);
+    let freezing = service.clone();
+    let freezer = freezing.clone();
+    let executor = cx.background_executor().clone();
+    let start_freeze = move || {
+        executor.spawn(async move {
+            freezer.wait_for_freeze_turn(generation);
+            let hide_failure = match gate {
+                Some(gate) => match gate.recv().await {
+                    Ok(Err(error)) => Some(error),
+                    Ok(Ok(())) | Err(_) => None,
+                },
+                None => None,
+            };
+            let _operation = freezer.freeze.operation.lock();
+            let release = |generation| {
+                freezer.release_generation(generation, freezer.freeze.state.lock(), || {
+                    freezer.release_screen_started()
+                })
+            };
+            let released = release_first.is_none_or(release);
+            let result = if !released {
+                Err(anyhow::anyhow!("Could not release the frozen screen"))
+            } else if let Some(error) = hide_failure.as_ref() {
+                Err(anyhow::anyhow!(error.clone()))
+            } else {
+                freezer.freeze_screen_started()
+            };
+            let released = released && (result.is_ok() || release(generation));
+            (
+                freezer.finish_freeze(generation, result),
+                released,
+                hide_failure,
+            )
+        })
+    };
+    #[cfg(not(all(test, windows)))]
+    let freeze_task = start_freeze();
     let mut open = Some(open);
     let opened_early = deferred_show.then(|| open.take().unwrap()(cx, true, generation));
-    let freezing = service.clone();
     cx.spawn(async move |cx| {
-        let freezer = freezing.clone();
         #[cfg(all(test, windows))]
-        freezer
+        freezing
             .freeze
             .scheduled_for_test
             .store(generation, std::sync::atomic::Ordering::SeqCst);
-        let (frozen, released, hide_failure) = cx
-            .background_executor()
-            .spawn(async move {
-                freezer.wait_for_freeze_turn(generation);
-                let hide_failure = match gate {
-                    Some(gate) => match gate.recv().await {
-                        Ok(Err(error)) => Some(error),
-                        Ok(Ok(())) | Err(_) => None,
-                    },
-                    None => None,
-                };
-                let _operation = freezer.freeze.operation.lock();
-                let release = |generation| {
-                    freezer.release_generation(generation, freezer.freeze.state.lock(), || {
-                        freezer.release_screen_started()
-                    })
-                };
-                let released = release_first.is_none_or(release);
-                let result = if !released {
-                    Err(anyhow::anyhow!("Could not release the frozen screen"))
-                } else if let Some(error) = hide_failure.as_ref() {
-                    Err(anyhow::anyhow!(error.clone()))
-                } else {
-                    freezer.freeze_screen_started()
-                };
-                let released = released && (result.is_ok() || release(generation));
-                (
-                    freezer.finish_freeze(generation, result),
-                    released,
-                    hide_failure,
-                )
-            })
-            .await;
+        #[cfg(all(test, windows))]
+        let freeze_task = start_freeze();
+        let (frozen, released, hide_failure) = freeze_task.await;
         let failure = if released {
             hide_failure
         } else {
@@ -803,7 +808,7 @@ fn with_frozen_screen(
                 opened
             })
         } else {
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "macos"))]
             cx.update(|cx| {
                 if opened_early == Some(true) {
                     overlay::clear_pending_freeze(generation, owner, cx);
@@ -2789,7 +2794,7 @@ mod tests {
         }
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     #[herogpui::test]
     fn frozen_overlay_opens_before_the_freeze_task_runs(cx: &mut gpui::TestAppContext) {
         use std::sync::atomic::{AtomicBool, Ordering};
@@ -2821,7 +2826,7 @@ mod tests {
         assert!(opened.load(Ordering::SeqCst));
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     #[herogpui::test]
     fn the_frozen_snapshot_waits_for_the_icon_hide_gate(cx: &mut gpui::TestAppContext) {
         use std::sync::atomic::{AtomicBool, Ordering};

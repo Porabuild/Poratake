@@ -313,8 +313,6 @@ fn main() {
     let app = application()
         .with_assets(herogpui::HeroGpuiAssets)
         .with_quit_mode(gpui::QuitMode::Explicit);
-    #[cfg(windows)]
-    let app = app.with_windowing(gpui::WindowingRequest::Headless);
     app.on_open_urls(move |urls| {
         let paths: Vec<String> = urls
             .into_iter()
@@ -402,6 +400,8 @@ fn main() {
         }
         let events = bridge.events();
         state::set_native(cx, bridge);
+        #[cfg(any(windows, target_os = "macos"))]
+        capture::overlay::prewarm(cx);
         crate::update::spawn_auto_check(cx);
 
         cx.spawn(async move |cx| {

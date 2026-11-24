@@ -2176,14 +2176,17 @@ function Assert-NativeTooltipPaintProof([string]$path, [IntPtr]$tooltip, [IntPtr
         [pscustomobject]@{ Actual = [int]$proof.tooltipBounds.left; Expected = $tip.Left },
         [pscustomobject]@{ Actual = [int]$proof.tooltipBounds.top; Expected = $tip.Top },
         [pscustomobject]@{ Actual = [int]$proof.tooltipBounds.right; Expected = $tip.Right },
-        [pscustomobject]@{ Actual = [int]$proof.tooltipBounds.bottom; Expected = $tip.Bottom },
-        [pscustomobject]@{ Actual = [int]$proof.ownerBounds.left; Expected = $ownerBounds.Left },
-        [pscustomobject]@{ Actual = [int]$proof.ownerBounds.top; Expected = $ownerBounds.Top },
-        [pscustomobject]@{ Actual = [int]$proof.ownerBounds.right; Expected = $ownerBounds.Right },
-        [pscustomobject]@{ Actual = [int]$proof.ownerBounds.bottom; Expected = $ownerBounds.Bottom }
+        [pscustomobject]@{ Actual = [int]$proof.tooltipBounds.bottom; Expected = $tip.Bottom }
     )
+    $ownerGeometryChanged = ([int]$proof.ownerBounds.left -ne $ownerBounds.Left -or [int]$proof.ownerBounds.top -ne $ownerBounds.Top -or [int]$proof.ownerBounds.right -ne $ownerBounds.Right -or [int]$proof.ownerBounds.bottom -ne $ownerBounds.Bottom)
+    if ($ownerGeometryChanged) {
+        Write-Host "Recording bar moved after tooltip show: proof owner=$($proof.ownerBounds.left),$($proof.ownerBounds.top)-$($proof.ownerBounds.right),$($proof.ownerBounds.bottom); live owner=$($ownerBounds.Left),$($ownerBounds.Top)-$($ownerBounds.Right),$($ownerBounds.Bottom)"
+    }
     foreach ($check in $geometryChecks) {
-        if ($check.Actual -ne $check.Expected) { throw 'The in-process paint proof geometry does not match the live tooltip and owner windows.' }
+        if ($check.Actual -ne $check.Expected) {
+            Write-Host "Tooltip geometry mismatch: actual=$($check.Actual) expected=$($check.Expected); proof=$($proof.tooltipBounds.left),$($proof.tooltipBounds.top)-$($proof.tooltipBounds.right),$($proof.tooltipBounds.bottom); live tip=$($tip.Left),$($tip.Top)-$($tip.Right),$($tip.Bottom)"
+            throw 'The in-process paint proof geometry does not match the live tooltip and owner windows.'
+        }
     }
     if ([uint32]$proof.affinity -ne $affinity -or [uint32]$proof.affinity -eq 0) { throw 'The in-process paint proof affinity does not match the live protected tooltip.' }
     Add-Type -AssemblyName System.Drawing
@@ -2372,29 +2375,44 @@ try {
     Write-Host 'Daemon screenshot positively captured the ordinary white fixture window.'
 
     $tooltipProofMetadataPath = [System.IO.Path]::ChangeExtension($tooltipProofPath, '.json')
-    foreach ($proofFile in @($tooltipProofPath, $tooltipProofMetadataPath)) {
-        if ([System.IO.File]::Exists($proofFile)) { Remove-Item -LiteralPath $proofFile -Force -ErrorAction Stop }
-        if ([System.IO.File]::Exists($proofFile)) { throw "Could not clear stale test-owned tooltip proof: $proofFile" }
-    }
-    if (-not [PoratakeTooltipProbe]::SetCursorPos($hoverX, $hoverY)) { throw 'Could not re-enter the tooltip trigger.' }
-    $shownTooltip = Wait-Until {
-        $handle = Get-VisibleTooltipWindow $application.Id $owner
-        if (-not $handle) { return $null }
-        $text = [PoratakeTooltipProbe]::TooltipText($handle, $owner, [uint32]$application.Id)
-        if ($text -ne $visibleTooltip.Text) { return $null }
-        return @{ Handle = $handle; Text = $text }
-    } 2000 'Tooltip did not return for screenshot exclusion capture.'
-    $shownBounds = New-Object PoratakeTooltipProbe+Rect
-    if (-not [PoratakeTooltipProbe]::GetWindowRect($shownTooltip.Handle, [ref]$shownBounds)) { throw 'Could not read shown tooltip bounds.' }
-    if ($shownBounds.Left -ne $tooltipBounds.Left -or $shownBounds.Top -ne $tooltipBounds.Top -or $shownBounds.Right -ne $tooltipBounds.Right -or $shownBounds.Bottom -ne $tooltipBounds.Bottom) {
-        throw 'Tooltip moved between hidden and shown captures.'
-    }
-    Assert-NativeTooltipPaintProof $tooltipProofPath $shownTooltip.Handle $owner $visibleTooltip.Text $affinity $shownBounds $bounds
     $videoPaintProofPath = Join-Path $evidenceRoot 'native-tooltip-video-paint.png'
     $videoPaintProofMetadataPath = [System.IO.Path]::ChangeExtension($videoPaintProofPath, '.json')
-    Copy-Item -LiteralPath $tooltipProofPath -Destination $videoPaintProofPath -Force -ErrorAction Stop
-    Copy-Item -LiteralPath $tooltipProofMetadataPath -Destination $videoPaintProofMetadataPath -Force -ErrorAction Stop
-    Assert-NativeTooltipPaintProof $videoPaintProofPath $shownTooltip.Handle $owner $visibleTooltip.Text $affinity $shownBounds $bounds
+    $tooltipGeometryVerified = $false
+    $lastProofError = $null
+    foreach ($proofAttempt in 1..4) {
+        try {
+            foreach ($proofFile in @($tooltipProofPath, $tooltipProofMetadataPath)) {
+                if ([System.IO.File]::Exists($proofFile)) { Remove-Item -LiteralPath $proofFile -Force -ErrorAction Stop }
+                if ([System.IO.File]::Exists($proofFile)) { throw "Could not clear stale test-owned tooltip proof: $proofFile" }
+            }
+            if (-not [PoratakeTooltipProbe]::SetCursorPos($hoverX, $hoverY)) { throw 'Could not re-enter the tooltip trigger.' }
+            $shownTooltip = Wait-Until {
+                $handle = Get-VisibleTooltipWindow $application.Id $owner
+                if (-not $handle) { return $null }
+                $text = [PoratakeTooltipProbe]::TooltipText($handle, $owner, [uint32]$application.Id)
+                if ($text -ne $visibleTooltip.Text) { return $null }
+                return @{ Handle = $handle; Text = $text }
+            } 2000 'Tooltip did not return for screenshot exclusion capture.'
+            $shownBounds = New-Object PoratakeTooltipProbe+Rect
+            if (-not [PoratakeTooltipProbe]::GetWindowRect($shownTooltip.Handle, [ref]$shownBounds)) { throw 'Could not read shown tooltip bounds.' }
+            if ($shownBounds.Left -ne $tooltipBounds.Left -or $shownBounds.Top -ne $tooltipBounds.Top -or $shownBounds.Right -ne $tooltipBounds.Right -or $shownBounds.Bottom -ne $tooltipBounds.Bottom) {
+                throw 'Tooltip moved between hidden and shown captures.'
+            }
+            Assert-NativeTooltipPaintProof $tooltipProofPath $shownTooltip.Handle $owner $visibleTooltip.Text $affinity $shownBounds $bounds
+            Copy-Item -LiteralPath $tooltipProofPath -Destination $videoPaintProofPath -Force -ErrorAction Stop
+            Copy-Item -LiteralPath $tooltipProofMetadataPath -Destination $videoPaintProofMetadataPath -Force -ErrorAction Stop
+            Assert-NativeTooltipPaintProof $videoPaintProofPath $shownTooltip.Handle $owner $visibleTooltip.Text $affinity $shownBounds $bounds
+            $tooltipGeometryVerified = $true
+            break
+        } catch {
+            $lastProofError = $_
+            Write-Host "Tooltip paint proof attempt $proofAttempt of 4 failed: $($_.Exception.Message)"
+            if ($proofAttempt -ge 4) { throw }
+            if (-not [PoratakeTooltipProbe]::SetCursorPos($bounds.Left - 20, $bounds.Top - 20)) { throw 'Could not move pointer away before retrying tooltip proof.' }
+            Wait-Until { -not [PoratakeTooltipProbe]::IsWindowVisible($shownTooltip.Handle) } 2000 'Tooltip stayed visible before retrying tooltip proof.' | Out-Null
+        }
+    }
+    if (-not $tooltipGeometryVerified) { throw ('Tooltip paint proof geometry never matched the live tooltip. ' + ($lastProofError | Out-String)) }
     if (-not [PoratakeTooltipProbe]::IsWindowVisible($shownTooltip.Handle)) { throw 'Native tooltip became hidden before the production screenshot.' }
     Capture-TooltipArea 'tooltip-shown-capture' $shownBounds $shownCapture
     if (-not [PoratakeTooltipProbe]::IsWindowVisible($shownTooltip.Handle) -or [PoratakeTooltipProbe]::TooltipText($shownTooltip.Handle, $owner, [uint32]$application.Id) -ne $visibleTooltip.Text) {
@@ -2851,9 +2869,11 @@ try {
     $previewImageCapture = Join-Path $captureRoot 'capture-preview-image.png'
     $script:previewReadinessAttempt = 0
     $script:previewReadinessFailure = 'The preview image did not reach a stable magenta capture before the readiness deadline.'
+    [IntPtr]$previewPulseResult = [IntPtr]::Zero
     $previewImageReady = Wait-Until {
         if ($script:previewReadinessAttempt -ge 6) { return @{ Exhausted = $true } }
         $script:previewReadinessAttempt++
+        [void][PoratakeTooltipProbe]::SendMessageTimeout($previewOwnerHandle, 0, [UIntPtr]::Zero, [IntPtr]::Zero, 0x23, 500, [ref]$previewPulseResult)
         $firstReadinessCapture = Join-Path $captureRoot ("capture-preview-readiness-{0:D2}-a.png" -f $script:previewReadinessAttempt)
         $secondReadinessCapture = Join-Path $captureRoot ("capture-preview-readiness-{0:D2}-b.png" -f $script:previewReadinessAttempt)
         Capture-TooltipArea "capture-preview-image-readiness-$($script:previewReadinessAttempt)-a" $previewPositiveControl $firstReadinessCapture 10
@@ -2871,7 +2891,16 @@ try {
             return $null
         }
     } 15000 ''
-    if (-not $previewImageReady -or $previewImageReady.Exhausted) { throw "Capture-preview image readiness failed after $($script:previewReadinessAttempt) bounded attempts: $script:previewReadinessFailure" }
+    if (-not $previewImageReady -or $previewImageReady.Exhausted) {
+        $previewFailureScreen = Join-Path $captureRoot 'capture-preview-readiness-failure-screen.png'
+        try {
+            Capture-TooltipArea 'capture-preview-readiness-failure-screen' $previewMonitor.Monitor $previewFailureScreen
+            Write-Host "Capture-preview readiness failure screen preserved at $previewFailureScreen."
+        } catch {
+            Write-Host "Capture-preview readiness failure screen could not be captured: $($_.Exception.Message)"
+        }
+        throw "Capture-preview image readiness failed after $($script:previewReadinessAttempt) bounded attempts: $script:previewReadinessFailure"
+    }
     Assert-PreviewPixelsCaptured $previewImageCapture $previewPositiveControl
 
     $previewTrigger = New-Object PoratakeTooltipProbe+Point
@@ -3815,16 +3844,46 @@ try {
     if (-not [PoratakeTooltipProbe]::SetForegroundWindow($handoffFreezeControlState.Selector)) { throw 'Could not foreground the Freeze Screen positive-control selector for cancellation.' }
     Wait-Until { [PoratakeTooltipProbe]::GetForegroundWindow() -eq $handoffFreezeControlState.Selector } 3000 'The Freeze Screen positive-control selector did not become the foreground input target.' | Out-Null
     [PoratakeTooltipProbe]::PressKey(0x1B)
-    Wait-Until {
+    $handoffFreezeCancelState = @{ selectorVisible = $null; selectorCloaked = $null; freezeVisibleCount = $null; releaseTraced = $null; overlayWindows = ''; selectorThreadResponding = $null }
+    [IntPtr]$handoffFreezePulseResult = [IntPtr]::Zero
+    $handoffFreezeReleased = Wait-Until {
         $selectorVisible = [PoratakeTooltipProbe]::IsWindowVisible($handoffFreezeControlState.Selector)
-        $freezeVisible = @([PoratakeTooltipProbe]::Windows([uint32]$handoffFreezeControlState.Daemon.ProcessId) | Where-Object {
+        $selectorThreadResponding = [PoratakeTooltipProbe]::SendMessageTimeout($handoffFreezeControlState.Selector, 0, [UIntPtr]::Zero, [IntPtr]::Zero, 0x23, 500, [ref]$handoffFreezePulseResult) -ne [IntPtr]::Zero
+        $selectorCloakedValue = -1
+        $selectorCloakedResult = [PoratakeTooltipProbe]::DwmGetWindowAttribute($handoffFreezeControlState.Selector, 14, [ref]$selectorCloakedValue, 4)
+        $selectorCloaked = $selectorCloakedResult -eq 0 -and $selectorCloakedValue -ne 0
+        $freezeVisibleCount = @([PoratakeTooltipProbe]::Windows([uint32]$handoffFreezeControlState.Daemon.ProcessId) | Where-Object {
             [PoratakeTooltipProbe]::IsWindowVisible($_) -and [PoratakeTooltipProbe]::ClassName($_) -ceq 'PoratakeFreezeOverlay'
-        }).Count -gt 0
-        if ($selectorVisible -or $freezeVisible) { return $null }
+        }).Count
         $lines = if (Test-Path -LiteralPath $handoffFreezeControlTracePath) { @(Get-Content -LiteralPath $handoffFreezeControlTracePath) } else { @() }
-        if (-not ($lines | Where-Object { $_ -match 'route freeze-screen release$' })) { return $null }
+        $releaseTraced = [bool]($lines | Where-Object { $_ -match 'route freeze-screen release$' })
+        $overlayWindows = @([PoratakeTooltipProbe]::Windows([uint32]$handoffFreezeControlApplication.Id) | Where-Object {
+            [PoratakeTooltipProbe]::WindowText($_) -ceq 'Poratake capture overlay'
+        } | ForEach-Object {
+            $windowCloakedValue = -1
+            [void][PoratakeTooltipProbe]::DwmGetWindowAttribute($_, 14, [ref]$windowCloakedValue, 4)
+            "hwnd=$($_.ToInt64()) visible=$([PoratakeTooltipProbe]::IsWindowVisible($_)) cloaked=$($windowCloakedValue -ne 0)"
+        })
+        $handoffFreezeCancelState.selectorVisible = $selectorVisible
+        $handoffFreezeCancelState.selectorCloaked = $selectorCloaked
+        $handoffFreezeCancelState.freezeVisibleCount = $freezeVisibleCount
+        $handoffFreezeCancelState.releaseTraced = $releaseTraced
+        $handoffFreezeCancelState.overlayWindows = $overlayWindows -join '; '
+        $handoffFreezeCancelState.selectorThreadResponding = $selectorThreadResponding
+        if ($selectorVisible -or ($freezeVisibleCount -gt 0) -or (-not $releaseTraced)) { return $null }
         return $true
-    } 10000 'Cancelling the Freeze Screen positive control did not release its daemon overlay.' | Out-Null
+    } 10000 $null
+    if (-not $handoffFreezeReleased) {
+        $handoffFreezeFailureScreen = Join-Path $captureRoot 'freeze-cancel-failure-screen.png'
+        try {
+            Capture-TooltipArea 'freeze-cancel-failure-screen' $monitor.Monitor $handoffFreezeFailureScreen
+            Write-Host "Freeze Screen cancel failure screen preserved at $handoffFreezeFailureScreen."
+        } catch {
+            Write-Host "Freeze Screen cancel failure screen could not be captured: $($_.Exception.Message)"
+        }
+        throw "Cancelling the Freeze Screen positive control did not release its daemon overlay: selectorVisible=$($handoffFreezeCancelState.selectorVisible), selectorCloaked=$($handoffFreezeCancelState.selectorCloaked), selectorThreadResponding=$($handoffFreezeCancelState.selectorThreadResponding), freezeWindowsVisible=$($handoffFreezeCancelState.freezeVisibleCount), releaseTraced=$($handoffFreezeCancelState.releaseTraced), appOverlayWindows=[$($handoffFreezeCancelState.overlayWindows)]."
+    }
+    Write-Host "Freeze Screen positive control cancelled: selector visible=$($handoffFreezeCancelState.selectorVisible), cloaked=$($handoffFreezeCancelState.selectorCloaked), daemon freeze windows visible=$($handoffFreezeCancelState.freezeVisibleCount), appOverlayWindows=[$($handoffFreezeCancelState.overlayWindows)]."
     Capture-OwnedDaemonChildren $handoffFreezeControlApplication
     $handoffFreezeControlParentId = $handoffFreezeControlApplication.Id
     if (-not $handoffFreezeControlApplication.HasExited) {

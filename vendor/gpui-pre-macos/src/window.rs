@@ -3402,7 +3402,21 @@ extern "C" fn set_frame_size(this: &AnyObject, _: Sel, size: NSSize) {
 
     let scale_factor = lock.scale_factor();
     let drawable_size = new_size.to_device_pixels(scale_factor);
-    lock.renderer.update_drawable_size(drawable_size);
+    let is_hidden_park = !lock.native_window().isVisible()
+        && drawable_size.width.0 <= 4
+        && drawable_size.height.0 <= 4
+        && (old_size.width > px(4.0) || old_size.height > px(4.0));
+    if is_hidden_park {
+        lock.stop_display_link();
+        if let Some(new_layer) = lock.renderer.recreate_layer(drawable_size) {
+            unsafe {
+                let _: () = msg_send![this, setLayer: new_layer.cast::<AnyObject>()];
+                let _: () = msg_send![class!(CATransaction), flush];
+            }
+        }
+    } else {
+        lock.renderer.update_drawable_size(drawable_size);
+    }
 
     if let Some(mut callback) = lock.resize_callback.take() {
         let content_size = lock.content_size();
