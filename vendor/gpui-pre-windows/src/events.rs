@@ -86,9 +86,6 @@ impl WindowsWindowInner {
         wparam: WPARAM,
         lparam: LPARAM,
     ) -> LRESULT {
-        if msg == WM_NULL {
-            crate::platform::park_diag_pulse();
-        }
         let handled = match msg {
             // `DefWindowProc` answers `MA_NOACTIVATE` for a left click on `HTCAPTION`.
             // The activation is only triggered when `DefWindowProc` handles the following `WM_NCLBUTTONDOWN`.
@@ -322,7 +319,6 @@ impl WindowsWindowInner {
     }
 
     fn handle_paint_msg(&self, handle: HWND) -> Option<isize> {
-        crate::platform::park_diag_paint();
         self.draw_window(handle, false)
     }
 
@@ -1366,7 +1362,6 @@ impl WindowsWindowInner {
         handle: HWND,
         wparam: WPARAM,
     ) -> Option<isize> {
-        crate::platform::park_diag_show(handle.0 as usize, wparam.0 != 0);
         self.report_visibility();
         if wparam.0 == 1 {
             unsafe {

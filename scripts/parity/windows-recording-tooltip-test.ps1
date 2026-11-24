@@ -4590,9 +4590,6 @@ try {
             }
         }
     }
-    foreach ($parkDiagLog in @(Get-ChildItem -LiteralPath ([System.IO.Path]::GetTempPath()) -Filter 'poratake-park-diag-*.log' -File -ErrorAction SilentlyContinue)) {
-        try { Copy-Item -LiteralPath $parkDiagLog.FullName -Destination (Join-Path $evidenceRoot $parkDiagLog.Name) -Force } catch { }
-    }
     $ownedApplicationIds = @($application, $previewApplication, $workflowApplication, $reopenApplication, $videoApplication, $handoffFreezeControlApplication, $handoffApplication) | Where-Object { $_ } | ForEach-Object { $_.Id }
     foreach ($owned in $ownedDaemons) {
         $process = $owned.Process
