@@ -130,19 +130,10 @@ pub fn schedule_idle_reclaim(cx: &mut App) {
             if !is_current_idle(generation, cx) {
                 return;
             }
-            // Idle reclaim only drops transient caches, discards the hidden
-            // preview window and compacts the heap/working set. The 1x1 pooled
-            // overlays, cached tray menu, GPU context and daemon stay warm
-            // forever so a screenshot is instant no matter how long the app
-            // has been idle.
             clear_transient_caches();
             crate::windows::capture_preview::CapturePreviewWindow::discard_idle(cx);
             #[cfg(all(target_os = "macos", not(test)))]
             if crate::capture::overlay::pooled_count(cx) > 0 {
-                // macOS WindowServer retains the high-water fullscreen backing
-                // surface (~30 MB on Retina) for an NSWindow even after it
-                // shrinks to 1x1. Cycling to a fresh 1x1 prewarmed overlay
-                // releases that surface while keeping the next capture warm.
                 idle_state(cx).evicting = true;
                 crate::capture::overlay::evict_pooled(cx);
                 crate::capture::overlay::prewarm(cx);

@@ -505,9 +505,6 @@ impl MetalRenderer {
         }
     }
 
-    /// Replaces the backing `CAMetalLayer` with a fresh layer sized to `size`
-    /// so CoreAnimation immediately releases large cached `IOSurface` drawables
-    /// when a hidden window is parked at 1x1.
     pub fn recreate_layer(&mut self, size: Size<DevicePixels>) -> Option<*mut CAMetalLayer> {
         let old_layer = self.layer.take()?;
         let new_layer = CAMetalLayer::new();

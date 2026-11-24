@@ -2178,9 +2178,6 @@ function Assert-NativeTooltipPaintProof([string]$path, [IntPtr]$tooltip, [IntPtr
         [pscustomobject]@{ Actual = [int]$proof.tooltipBounds.right; Expected = $tip.Right },
         [pscustomobject]@{ Actual = [int]$proof.tooltipBounds.bottom; Expected = $tip.Bottom }
     )
-    # The proof captures the owner rect at show time while the recording bar
-    # re-anchors itself by a few pixels after the hover, so the owner snapshot
-    # is compared separately. The tooltip's own rect must always match.
     $ownerGeometryChanged = ([int]$proof.ownerBounds.left -ne $ownerBounds.Left -or [int]$proof.ownerBounds.top -ne $ownerBounds.Top -or [int]$proof.ownerBounds.right -ne $ownerBounds.Right -or [int]$proof.ownerBounds.bottom -ne $ownerBounds.Bottom)
     if ($ownerGeometryChanged) {
         Write-Host "Recording bar moved after tooltip show: proof owner=$($proof.ownerBounds.left),$($proof.ownerBounds.top)-$($proof.ownerBounds.right),$($proof.ownerBounds.bottom); live owner=$($ownerBounds.Left),$($ownerBounds.Top)-$($ownerBounds.Right),$($ownerBounds.Bottom)"

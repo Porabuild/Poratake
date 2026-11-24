@@ -766,12 +766,10 @@ fn with_frozen_screen(
     let opened_early = deferred_show.then(|| open.take().unwrap()(cx, true, generation));
     cx.spawn(async move |cx| {
         #[cfg(all(test, windows))]
-        {
-            freezing
-                .freeze
-                .scheduled_for_test
-                .store(generation, std::sync::atomic::Ordering::SeqCst);
-        }
+        freezing
+            .freeze
+            .scheduled_for_test
+            .store(generation, std::sync::atomic::Ordering::SeqCst);
         #[cfg(all(test, windows))]
         let freeze_task = start_freeze();
         let (frozen, released, hide_failure) = freeze_task.await;
