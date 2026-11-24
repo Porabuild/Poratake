@@ -2183,7 +2183,10 @@ function Assert-NativeTooltipPaintProof([string]$path, [IntPtr]$tooltip, [IntPtr
         [pscustomobject]@{ Actual = [int]$proof.ownerBounds.bottom; Expected = $ownerBounds.Bottom }
     )
     foreach ($check in $geometryChecks) {
-        if ($check.Actual -ne $check.Expected) { throw 'The in-process paint proof geometry does not match the live tooltip and owner windows.' }
+        if ($check.Actual -ne $check.Expected) {
+            Write-Host "Tooltip geometry mismatch: actual=$($check.Actual) expected=$($check.Expected); proof=$($proof.tooltipBounds.left),$($proof.tooltipBounds.top)-$($proof.tooltipBounds.right),$($proof.tooltipBounds.bottom) owner=$($proof.ownerBounds.left),$($proof.ownerBounds.top)-$($proof.ownerBounds.right),$($proof.ownerBounds.bottom); live tip=$($tip.Left),$($tip.Top)-$($tip.Right),$($tip.Bottom) owner=$($ownerBounds.Left),$($ownerBounds.Top)-$($ownerBounds.Right),$($ownerBounds.Bottom)"
+            throw 'The in-process paint proof geometry does not match the live tooltip and owner windows.'
+        }
     }
     if ([uint32]$proof.affinity -ne $affinity -or [uint32]$proof.affinity -eq 0) { throw 'The in-process paint proof affinity does not match the live protected tooltip.' }
     Add-Type -AssemblyName System.Drawing
