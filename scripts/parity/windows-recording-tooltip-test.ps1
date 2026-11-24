@@ -2872,9 +2872,11 @@ try {
     $previewImageCapture = Join-Path $captureRoot 'capture-preview-image.png'
     $script:previewReadinessAttempt = 0
     $script:previewReadinessFailure = 'The preview image did not reach a stable magenta capture before the readiness deadline.'
+    [IntPtr]$previewPulseResult = [IntPtr]::Zero
     $previewImageReady = Wait-Until {
         if ($script:previewReadinessAttempt -ge 6) { return @{ Exhausted = $true } }
         $script:previewReadinessAttempt++
+        [void][PoratakeTooltipProbe]::SendMessageTimeout($previewOwnerHandle, 0, [UIntPtr]::Zero, [IntPtr]::Zero, 0x23, 500, [ref]$previewPulseResult)
         $firstReadinessCapture = Join-Path $captureRoot ("capture-preview-readiness-{0:D2}-a.png" -f $script:previewReadinessAttempt)
         $secondReadinessCapture = Join-Path $captureRoot ("capture-preview-readiness-{0:D2}-b.png" -f $script:previewReadinessAttempt)
         Capture-TooltipArea "capture-preview-image-readiness-$($script:previewReadinessAttempt)-a" $previewPositiveControl $firstReadinessCapture 10
@@ -2892,7 +2894,16 @@ try {
             return $null
         }
     } 15000 ''
-    if (-not $previewImageReady -or $previewImageReady.Exhausted) { throw "Capture-preview image readiness failed after $($script:previewReadinessAttempt) bounded attempts: $script:previewReadinessFailure" }
+    if (-not $previewImageReady -or $previewImageReady.Exhausted) {
+        $previewFailureScreen = Join-Path $captureRoot 'capture-preview-readiness-failure-screen.png'
+        try {
+            Capture-TooltipArea 'capture-preview-readiness-failure-screen' $previewMonitor.Monitor $previewFailureScreen
+            Write-Host "Capture-preview readiness failure screen preserved at $previewFailureScreen."
+        } catch {
+            Write-Host "Capture-preview readiness failure screen could not be captured: $($_.Exception.Message)"
+        }
+        throw "Capture-preview image readiness failed after $($script:previewReadinessAttempt) bounded attempts: $script:previewReadinessFailure"
+    }
     Assert-PreviewPixelsCaptured $previewImageCapture $previewPositiveControl
 
     $previewTrigger = New-Object PoratakeTooltipProbe+Point
@@ -4581,6 +4592,9 @@ try {
                 if (-not $ownedApplication.HasExited) { $safeToDeleteProfile = $false }
             }
         }
+    }
+    foreach ($parkDiagLog in @(Get-ChildItem -LiteralPath ([System.IO.Path]::GetTempPath()) -Filter 'poratake-park-diag-*.log' -File -ErrorAction SilentlyContinue)) {
+        try { Copy-Item -LiteralPath $parkDiagLog.FullName -Destination (Join-Path $evidenceRoot $parkDiagLog.Name) -Force } catch { }
     }
     $ownedApplicationIds = @($application, $previewApplication, $workflowApplication, $reopenApplication, $videoApplication, $handoffFreezeControlApplication, $handoffApplication) | Where-Object { $_ } | ForEach-Object { $_.Id }
     foreach ($owned in $ownedDaemons) {

@@ -514,11 +514,15 @@ impl WindowsPlatform {
         let all_windows = Arc::downgrade(&self.raw_window_handles);
         let text_system = Arc::downgrade(direct_write_text_system);
         let invalidate_devices = self.invalidate_devices.clone();
+        let diag_windows = Arc::downgrade(&self.raw_window_handles);
+        let diag_wake = vsync_wake.clone();
+        let diag_stop = stop.clone();
 
         std::thread::Builder::new()
             .name("VSyncProvider".to_owned())
             .spawn(move || {
                 let vsync_provider = VSyncProvider::new();
+                park_diag_watcher(diag_windows, diag_wake, diag_stop);
                 loop {
                     if stop.load(Ordering::Acquire) {
                         break;
@@ -535,11 +539,17 @@ impl WindowsPlatform {
                     };
                     drop(all_windows_strong);
                     if !has_active_window && !invalidate_devices.load(Ordering::Acquire) {
+                        park_diag_state(1);
                         vsync_wake.wait(&stop);
+                        park_diag_wake();
                         continue;
                     }
 
+                    PARK_DIAG_TICKS.fetch_add(1, Ordering::Relaxed);
+                    park_diag_state(3);
+                    let diag_flush_started = std::time::Instant::now();
                     let signal_source = vsync_provider.wait_for_vsync();
+                    park_diag_flushed(diag_flush_started.elapsed());
                     let signal_at = PlatformFrameSignal::capture(scheduler::Instant::now);
                     if stop.load(Ordering::Acquire) {
                         break;
@@ -547,6 +557,7 @@ impl WindowsPlatform {
                     if check_device_lost(&directx_device.device)
                         || invalidate_devices.fetch_and(false, Ordering::Acquire)
                     {
+                        park_diag_state(6);
                         if let Err(err) = handle_gpu_device_lost(
                             &mut directx_device,
                             platform_window.as_raw(),
@@ -560,6 +571,7 @@ impl WindowsPlatform {
                     let Some(all_windows) = all_windows.upgrade() else {
                         break;
                     };
+                    park_diag_state(5);
                     for hwnd in all_windows.read().iter() {
                         unsafe {
                             if !IsWindowVisible(hwnd.as_raw()).as_bool()
@@ -571,15 +583,219 @@ impl WindowsPlatform {
                             if let Some(signal_at) = signal_at {
                                 hwnd.frame_signal.record(signal_at, signal_source);
                             }
-                            RedrawWindow(Some(hwnd.as_raw()), None, None, RDW_INVALIDATE)
-                                .ok()
-                                .log_err();
+                            if !RedrawWindow(Some(hwnd.as_raw()), None, None, RDW_INVALIDATE)
+                                .as_bool()
+                            {
+                                PARK_DIAG_REDRAW_FAILED.fetch_add(1, Ordering::Relaxed);
+                            }
                         }
                     }
                 }
             })
             .unwrap();
     }
+}
+
+static PARK_DIAG_START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+static PARK_DIAG_STATE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+static PARK_DIAG_STATE_AT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static PARK_DIAG_TICKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static PARK_DIAG_WAKES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static PARK_DIAG_FLUSH_LAST: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+static PARK_DIAG_FLUSH_MAX: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+static PARK_DIAG_REDRAW_FAILED: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+static PARK_DIAG_PAINTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static PARK_DIAG_PULSES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static PARK_DIAG_PULSE_AT: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+static PARK_DIAG_SHOW_AT: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+static PARK_DIAG_SHOW: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+pub(crate) fn park_diag_ms() -> u64 {
+    PARK_DIAG_START
+        .get_or_init(std::time::Instant::now)
+        .elapsed()
+        .as_millis() as u64
+}
+
+pub(crate) fn park_diag_paint() {
+    PARK_DIAG_PAINTS.fetch_add(1, Ordering::Relaxed);
+}
+
+pub(crate) fn park_diag_pulse() {
+    PARK_DIAG_PULSE_AT.store(park_diag_ms(), Ordering::Relaxed);
+    PARK_DIAG_PULSES.fetch_add(1, Ordering::Relaxed);
+}
+
+pub(crate) fn park_diag_show(hwnd: usize, shown: bool) {
+    let hwnd = (hwnd << 1) | usize::from(shown);
+    PARK_DIAG_SHOW_AT.store(park_diag_ms(), Ordering::Relaxed);
+    PARK_DIAG_SHOW.store(hwnd as u64, Ordering::Relaxed);
+}
+
+fn park_diag_state(state: u32) {
+    PARK_DIAG_STATE.store(state, Ordering::Relaxed);
+    PARK_DIAG_STATE_AT.store(park_diag_ms(), Ordering::Relaxed);
+}
+
+fn park_diag_wake() {
+    PARK_DIAG_WAKES.fetch_add(1, Ordering::Relaxed);
+    park_diag_state(2);
+}
+
+fn park_diag_flushed(elapsed: std::time::Duration) {
+    let elapsed = elapsed.as_millis() as u64;
+    PARK_DIAG_FLUSH_LAST.store(elapsed, Ordering::Relaxed);
+    PARK_DIAG_FLUSH_MAX.fetch_max(elapsed, Ordering::Relaxed);
+    park_diag_state(4);
+}
+
+pub(crate) fn park_diag_log(args: std::fmt::Arguments<'_>) {
+    let line = format!("[park-diag] {args} t={}ms\n", park_diag_ms());
+    eprint!("{line}");
+    let path = std::env::temp_dir().join(format!("poratake-park-diag-{}.log", std::process::id()));
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = std::io::Write::write_all(&mut file, line.as_bytes());
+    }
+}
+
+fn park_diag_watcher(
+    all_windows: std::sync::Weak<RwLock<SmallVec<[TrackedWindow; 4]>>>,
+    vsync_wake: Arc<VsyncWake>,
+    stop: Arc<AtomicBool>,
+) {
+    std::thread::Builder::new()
+        .name("park-diag".to_owned())
+        .spawn(move || {
+            let visible = || {
+                all_windows
+                    .upgrade()
+                    .map(|windows| {
+                        windows
+                            .read()
+                            .iter()
+                            .filter(|tracked| unsafe {
+                                IsWindowVisible(tracked.as_raw()).as_bool()
+                                    && !IsIconic(tracked.as_raw()).as_bool()
+                            })
+                            .map(|tracked| tracked.as_raw().0 as usize)
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default()
+            };
+            let mut stalled_since = None;
+            let mut stage = 0;
+            let mut last_summary = park_diag_ms();
+            while !stop.load(Ordering::Acquire) {
+                std::thread::sleep(std::time::Duration::from_millis(250));
+                let visible = visible();
+                let now = park_diag_ms();
+                let state = PARK_DIAG_STATE.load(Ordering::Relaxed);
+                let state_age = now.saturating_sub(PARK_DIAG_STATE_AT.load(Ordering::Relaxed));
+                let snapshot = |label: &str| {
+                    park_diag_log(format_args!(
+                        "watcher {label} state={state} state_age={state_age}ms ticks={} wakes={} flush_last={}ms flush_max={}ms redraw_failed={} paints={} pulses={} pulse_age={}ms last_show={:#x}/{} show_age={}ms visible={visible:?}",
+                        PARK_DIAG_TICKS.load(Ordering::Relaxed),
+                        PARK_DIAG_WAKES.load(Ordering::Relaxed),
+                        PARK_DIAG_FLUSH_LAST.load(Ordering::Relaxed),
+                        PARK_DIAG_FLUSH_MAX.load(Ordering::Relaxed),
+                        PARK_DIAG_REDRAW_FAILED.load(Ordering::Relaxed),
+                        PARK_DIAG_PAINTS.load(Ordering::Relaxed),
+                        PARK_DIAG_PULSES.load(Ordering::Relaxed),
+                        now.saturating_sub(PARK_DIAG_PULSE_AT.load(Ordering::Relaxed)),
+                        PARK_DIAG_SHOW.load(Ordering::Relaxed) >> 1,
+                        PARK_DIAG_SHOW.load(Ordering::Relaxed) & 1,
+                        now.saturating_sub(PARK_DIAG_SHOW_AT.load(Ordering::Relaxed)),
+                    ));
+                };
+                if now.saturating_sub(last_summary) >= 5000 {
+                    snapshot("summary");
+                    last_summary = now;
+                }
+                let stalled = match state {
+                    1 => !visible.is_empty(),
+                    3 => state_age > 1000,
+                    2 | 4 | 5 | 6 => !visible.is_empty() && state_age > 1000,
+                    _ => false,
+                };
+                if !stalled {
+                    if stalled_since.take().is_some() {
+                        snapshot("recovered");
+                    }
+                    stage = 0;
+                    continue;
+                }
+                let elapsed = now - *stalled_since.get_or_insert(now);
+                if stage == 0 && elapsed >= 500 {
+                    snapshot("stalled");
+                    stage = 1;
+                }
+                if stage == 1 && elapsed >= 2500 {
+                    snapshot("before notify");
+                    std::thread::spawn(|| {
+                        let started = std::time::Instant::now();
+                        let _ = unsafe {
+                            windows::Win32::Graphics::Dwm::DwmFlush()
+                        };
+                        park_diag_log(format_args!(
+                            "watcher probe: DwmFlush from another thread returned after {}ms",
+                            started.elapsed().as_millis()
+                        ));
+                    });
+                    if state == 1 {
+                        vsync_wake.notify();
+                        park_diag_log(format_args!("watcher experiment: notified the vsync thread"));
+                    }
+                    stage = 2;
+                }
+                if stage == 2 && elapsed >= 4500 {
+                    snapshot("before uncloak");
+                    for hwnd in &visible {
+                        let uncloaked = windows::core::BOOL::from(false);
+                        unsafe {
+                            let _ = windows::Win32::Graphics::Dwm::DwmSetWindowAttribute(
+                                windows::Win32::Foundation::HWND(*hwnd as *mut _),
+                                windows::Win32::Graphics::Dwm::DWMWA_CLOAK,
+                                (&uncloaked as *const windows::core::BOOL).cast(),
+                                std::mem::size_of_val(&uncloaked) as u32,
+                            );
+                        }
+                    }
+                    park_diag_log(format_args!("watcher experiment: uncloaked visible windows"));
+                    stage = 3;
+                }
+                if stage == 3 && elapsed >= 6500 {
+                    snapshot("after uncloak");
+                    stage = 4;
+                }
+                if stage == 4 && elapsed >= 8500 {
+                    for hwnd in &visible {
+                        unsafe {
+                            let _ = windows::Win32::UI::WindowsAndMessaging::ShowWindowAsync(
+                                windows::Win32::Foundation::HWND(*hwnd as *mut _),
+                                windows::Win32::UI::WindowsAndMessaging::SW_HIDE,
+                            );
+                        }
+                    }
+                    park_diag_log(format_args!("watcher experiment: hid visible windows"));
+                    stage = 5;
+                }
+                if stage == 5 && elapsed >= 10500 {
+                    snapshot("after hide");
+                    stage = 6;
+                }
+            }
+        })
+        .ok();
 }
 
 fn encode_restart_arguments(arguments: &[OsString]) -> OsString {
