@@ -1,4 +1,5 @@
-use crate::display_color::{ToneMapper, hdr_white_scale};
+use crate::display_calibration::transfer_for;
+use crate::display_color::{DisplayTransfer, capture_pixel_format};
 use crate::overlay::{MonitorEntry, bitmap_info, monitors, rect_height, rect_width, to_wide};
 use std::collections::HashMap;
 use std::ffi::c_void;
@@ -90,9 +91,14 @@ pub fn stream_capture_monitors(priority: Option<isize>) -> std::sync::mpsc::Rece
         if let Some(handle) = priority {
             targets.sort_by_key(|entry| entry.handle != handle);
         }
+        let transfers: HashMap<isize, Option<Arc<DisplayTransfer>>> = targets
+            .iter()
+            .map(|monitor| (monitor.handle, transfer_for(&monitor.device)))
+            .collect();
 
         let capture = |monitor: &MonitorEntry| {
-            capture_one_monitor(monitor).or_else(|| capture_with_gdi(monitor.rect))
+            let transfer = transfers.get(&monitor.handle).cloned().flatten();
+            capture_one_monitor(monitor, transfer).or_else(|| capture_with_gdi(monitor.rect))
         };
 
         if targets.len() < 2 {
@@ -141,8 +147,14 @@ fn collect_frames(
     frames
 }
 
-fn capture_one_monitor(monitor: &MonitorEntry) -> Option<DesktopFrame> {
-    capture_with_cached_device(monitor, capture_monitor).ok()
+fn capture_one_monitor(
+    monitor: &MonitorEntry,
+    transfer: Option<Arc<DisplayTransfer>>,
+) -> Option<DesktopFrame> {
+    with_cached_device(monitor, move |device, monitor| {
+        capture_monitor_region(device, monitor, transfer.as_deref(), None)
+    })
+    .ok()
 }
 
 unsafe extern "C" {
@@ -165,6 +177,7 @@ pub fn reclaim_idle_memory() {
 }
 
 pub fn prewarm_capture() {
+    crate::display_calibration::refresh_in_background();
     let _ = std::thread::Builder::new().spawn(|| {
         ensure_multithreaded_apartment();
         let _ = capture_interop();
@@ -176,6 +189,7 @@ pub fn capture_rect(bounds: RECT) -> Result<DesktopFrame, String> {
     let monitor = monitor_for_rect(bounds)
         .ok_or_else(|| "The capture area is not on a connected display".to_string())?;
     let monitor_bounds = monitor.rect;
+    let transfer = transfer_for(&monitor.device);
     let gdi_bounds = intersect_rects(monitor_bounds, bounds)
         .ok_or_else(|| "The capture area is outside the display bounds".to_string())?;
     crate::trace::trace("monitor resolved, running WGC");
@@ -183,8 +197,8 @@ pub fn capture_rect(bounds: RECT) -> Result<DesktopFrame, String> {
     let captured = run_isolated(CAPTURE_TIMEOUT, move || {
         let monitor = monitor_for_rect(monitor_bounds)
             .ok_or_else(|| "The display is no longer connected".to_string())?;
-        capture_with_cached_device(&monitor, |device, monitor| {
-            capture_monitor_region(device, monitor, Some(bounds))
+        with_cached_device(&monitor, |device, monitor| {
+            capture_monitor_region(device, monitor, transfer.as_deref(), Some(bounds))
         })
     })
     .unwrap_or_else(|| Err("Timed out while capturing the screen".to_string()));
@@ -216,10 +230,17 @@ pub fn capture_window(window: HWND) -> Result<DesktopFrame, String> {
             .into_iter()
             .find(|entry| entry.handle == monitor.0 as isize)
             .ok_or_else(|| "The window is not on a connected display".to_string())?;
-        let white_scale = hdr_white_scale(&entry.device);
+        let transfer = transfer_for(&entry.device);
 
-        capture_with_cached_device(&entry, |device, _| {
-            capture_item(device, &item, RECT::default(), None, white_scale, true)
+        with_cached_device(&entry, |device, _| {
+            capture_item(
+                device,
+                &item,
+                RECT::default(),
+                None,
+                transfer.as_deref(),
+                true,
+            )
         })
     })
     .unwrap_or_else(|| Err("Timed out while capturing the window".to_string()))
@@ -933,10 +954,10 @@ fn prune_capture_devices(targets: &[MonitorEntry]) {
     }
 }
 
-fn capture_with_cached_device(
+fn with_cached_device<T>(
     monitor: &MonitorEntry,
-    capture: impl FnOnce(&mut CaptureDevice, &MonitorEntry) -> Result<DesktopFrame, String>,
-) -> Result<DesktopFrame, String> {
+    capture: impl FnOnce(&mut CaptureDevice, &MonitorEntry) -> Result<T, String>,
+) -> Result<T, String> {
     let device = cached_capture_device(monitor.handle)
         .ok_or_else(|| "Failed to create the capture device".to_string())?;
     let captured = device
@@ -1080,16 +1101,10 @@ fn capture_interop() -> Result<IGraphicsCaptureItemInterop, String> {
         .map_err(|error| format!("Failed to open the capture factory: {error}"))
 }
 
-fn capture_monitor(
-    device: &mut CaptureDevice,
-    monitor: &MonitorEntry,
-) -> Result<DesktopFrame, String> {
-    capture_monitor_region(device, monitor, None)
-}
-
 fn capture_monitor_region(
     device: &mut CaptureDevice,
     monitor: &MonitorEntry,
+    transfer: Option<&DisplayTransfer>,
     crop_target: Option<RECT>,
 ) -> Result<DesktopFrame, String> {
     let interop = capture_interop()?;
@@ -1097,14 +1112,7 @@ fn capture_monitor_region(
     let item = unsafe { interop.CreateForMonitor(handle) }
         .map_err(|error| format!("Failed to open display capture: {error}"))?;
 
-    capture_item(
-        device,
-        &item,
-        monitor.rect,
-        crop_target,
-        hdr_white_scale(&monitor.device),
-        false,
-    )
+    capture_item(device, &item, monitor.rect, crop_target, transfer, false)
 }
 
 pub(crate) fn capture_timing_enabled() -> bool {
@@ -1130,9 +1138,38 @@ fn capture_item(
     item: &GraphicsCaptureItem,
     bounds: RECT,
     crop_target: Option<RECT>,
-    white_scale: Option<f32>,
+    transfer: Option<&DisplayTransfer>,
     preserve_alpha: bool,
 ) -> Result<DesktopFrame, String> {
+    let format = capture_pixel_format(transfer);
+
+    let frame = grab_frame(device, item, format)?;
+    let captured = log_capture_timing("read", || {
+        read_pixels(
+            device,
+            &frame,
+            bounds,
+            crop_target,
+            transfer,
+            preserve_alpha,
+        )
+    });
+    device.trim();
+
+    let (width, height, pixels) = captured?;
+    Ok(DesktopFrame {
+        bounds: crop_target.unwrap_or(bounds),
+        width,
+        height,
+        pixels,
+    })
+}
+
+fn grab_frame(
+    device: &CaptureDevice,
+    item: &GraphicsCaptureItem,
+    format: DirectXPixelFormat,
+) -> Result<Direct3D11CaptureFrame, String> {
     let setup_start = std::time::Instant::now();
     let size = item
         .Size()
@@ -1141,10 +1178,6 @@ fn capture_item(
         return Err("The capture target has no visible area".to_string());
     }
 
-    let format = match white_scale {
-        Some(_) => DirectXPixelFormat::R16G16B16A16Float,
-        None => DirectXPixelFormat::B8G8R8A8UIntNormalized,
-    };
     let pool = Direct3D11CaptureFramePool::CreateFreeThreaded(
         &device.winrt,
         format,
@@ -1186,43 +1219,39 @@ fn capture_item(
                     .recv_timeout(FRAME_TIMEOUT)
                     .map_err(|_| "Timed out while waiting for the screen contents".to_string())
             })
-        })
-        .and_then(|frame| {
-            log_capture_timing("read", || {
-                read_pixels(
-                    device,
-                    &frame,
-                    bounds,
-                    crop_target,
-                    white_scale,
-                    preserve_alpha,
-                )
-            })
         });
 
     let _ = session.Close();
     let _ = pool.RemoveFrameArrived(token);
     drop(receiver);
     let _ = pool.Close();
-    device.trim();
-
-    let (width, height, pixels) = captured?;
-    Ok(DesktopFrame {
-        bounds: crop_target.unwrap_or(bounds),
-        width,
-        height,
-        pixels,
-    })
+    captured
 }
 
-fn read_pixels(
+pub(crate) struct LinearFrame {
+    pub width: u32,
+    pub height: u32,
+    pub pixels: Vec<f32>,
+}
+
+pub(crate) fn capture_window_linear(window: HWND) -> Result<LinearFrame, String> {
+    ensure_multithreaded_apartment();
+
+    let mut device = CaptureDevice::create()?;
+    let interop = capture_interop()?;
+    let item = unsafe { interop.CreateForWindow(window) }
+        .map_err(|error| format!("Failed to open window capture: {error}"))?;
+    let frame = grab_frame(&device, &item, DirectXPixelFormat::R16G16B16A16Float)?;
+    let captured = read_linear_pixels(&mut device, &frame);
+    device.trim();
+    captured
+}
+
+fn map_frame<T>(
     device: &mut CaptureDevice,
     frame: &Direct3D11CaptureFrame,
-    bounds: RECT,
-    crop_target: Option<RECT>,
-    white_scale: Option<f32>,
-    preserve_alpha: bool,
-) -> Result<(u32, u32, Vec<u8>), String> {
+    read: impl FnOnce(&D3D11_TEXTURE2D_DESC, &D3D11_MAPPED_SUBRESOURCE) -> Result<T, String>,
+) -> Result<T, String> {
     let surface = frame
         .Surface()
         .map_err(|error| format!("Failed to access the captured surface: {error}"))?;
@@ -1234,19 +1263,11 @@ fn read_pixels(
 
     let mut descriptor = D3D11_TEXTURE2D_DESC::default();
     unsafe { source.GetDesc(&mut descriptor) };
-
-    let region = match crop_target {
-        Some(target) => {
-            let (left, top, right, bottom) =
-                crop_bounds_for_size(bounds, descriptor.Width, descriptor.Height, target)
-                    .ok_or_else(|| "The capture area is outside the display bounds".to_string())?;
-            (left as usize, top as usize, right as usize, bottom as usize)
-        }
-        None => (0, 0, descriptor.Width as usize, descriptor.Height as usize),
-    };
+    if descriptor.Width == 0 || descriptor.Height == 0 {
+        return Err("The capture target has no visible area".to_string());
+    }
 
     let staging = device.staging_texture(&descriptor)?;
-
     let source_resource: ID3D11Resource = source
         .cast()
         .map_err(|error| format!("Failed to access the captured texture: {error}"))?;
@@ -1267,15 +1288,77 @@ fn read_pixels(
             .map_err(|error| format!("Failed to read the capture buffer: {error}"))?;
     }
 
-    let pixels = convert_pixels_region(&mapped, region, white_scale, preserve_alpha);
+    let result = read(&descriptor, &mapped);
 
     unsafe {
         device.context.Unmap(&target_resource, 0);
     }
 
-    let width = (region.2 - region.0) as u32;
-    let height = (region.3 - region.1) as u32;
-    pixels.map(|pixels| (width, height, pixels))
+    result
+}
+
+fn read_linear_pixels(
+    device: &mut CaptureDevice,
+    frame: &Direct3D11CaptureFrame,
+) -> Result<LinearFrame, String> {
+    map_frame(device, frame, |descriptor, mapped| {
+        let width = descriptor.Width as usize;
+        let height = descriptor.Height as usize;
+        let pitch = mapped.RowPitch as usize;
+        let source =
+            unsafe { std::slice::from_raw_parts(mapped.pData as *const u8, pitch * height) };
+        let mut pixels = Vec::new();
+        pixels
+            .try_reserve_exact(width * height * 4)
+            .map_err(|_| "Not enough memory to read the captured window".to_string())?;
+
+        for row in 0..height {
+            for x in 0..width {
+                let offset = row * pitch + x * HDR_BYTES_PER_PIXEL;
+                let channels = &source[offset..offset + HDR_BYTES_PER_PIXEL];
+                pixels.extend_from_slice(&[
+                    half_to_f32(u16::from_le_bytes([channels[0], channels[1]])),
+                    half_to_f32(u16::from_le_bytes([channels[2], channels[3]])),
+                    half_to_f32(u16::from_le_bytes([channels[4], channels[5]])),
+                    half_to_f32(u16::from_le_bytes([channels[6], channels[7]])),
+                ]);
+            }
+        }
+
+        Ok(LinearFrame {
+            width: descriptor.Width,
+            height: descriptor.Height,
+            pixels,
+        })
+    })
+}
+
+fn read_pixels(
+    device: &mut CaptureDevice,
+    frame: &Direct3D11CaptureFrame,
+    bounds: RECT,
+    crop_target: Option<RECT>,
+    transfer: Option<&DisplayTransfer>,
+    preserve_alpha: bool,
+) -> Result<(u32, u32, Vec<u8>), String> {
+    map_frame(device, frame, |descriptor, mapped| {
+        let region = match crop_target {
+            Some(target) => {
+                let (left, top, right, bottom) =
+                    crop_bounds_for_size(bounds, descriptor.Width, descriptor.Height, target)
+                        .ok_or_else(|| {
+                            "The capture area is outside the display bounds".to_string()
+                        })?;
+                (left as usize, top as usize, right as usize, bottom as usize)
+            }
+            None => (0, 0, descriptor.Width as usize, descriptor.Height as usize),
+        };
+
+        let pixels = convert_pixels_region(mapped, region, transfer, preserve_alpha);
+        let width = (region.2 - region.0) as u32;
+        let height = (region.3 - region.1) as u32;
+        pixels.map(|pixels| (width, height, pixels))
+    })
 }
 
 #[cfg(test)]
@@ -1283,16 +1366,16 @@ fn convert_pixels(
     mapped: &D3D11_MAPPED_SUBRESOURCE,
     width: usize,
     height: usize,
-    white_scale: Option<f32>,
+    transfer: Option<&DisplayTransfer>,
     preserve_alpha: bool,
 ) -> Result<Vec<u8>, String> {
-    convert_pixels_region(mapped, (0, 0, width, height), white_scale, preserve_alpha)
+    convert_pixels_region(mapped, (0, 0, width, height), transfer, preserve_alpha)
 }
 
 fn convert_pixels_region(
     mapped: &D3D11_MAPPED_SUBRESOURCE,
     region: (usize, usize, usize, usize),
-    white_scale: Option<f32>,
+    transfer: Option<&DisplayTransfer>,
     preserve_alpha: bool,
 ) -> Result<Vec<u8>, String> {
     let (left, top, right, bottom) = region;
@@ -1307,7 +1390,7 @@ fn convert_pixels_region(
 
     let source = unsafe { std::slice::from_raw_parts(mapped.pData as *const u8, pitch * bottom) };
 
-    let Some(white_scale) = white_scale else {
+    let Some(transfer) = transfer else {
         let row_left = left * BYTES_PER_PIXEL;
         for row in top..bottom {
             let start = row * pitch + row_left;
@@ -1322,7 +1405,6 @@ fn convert_pixels_region(
     };
 
     pixels.resize(stride * height, 0);
-    let mapper = ToneMapper::new(white_scale);
     let row_left = left * HDR_BYTES_PER_PIXEL;
     let row_hdr_bytes = width * HDR_BYTES_PER_PIXEL;
     for (out_row, row) in (top..bottom).enumerate() {
@@ -1336,7 +1418,7 @@ fn convert_pixels_region(
             .iter()
             .zip(target_row.as_chunks_mut::<BYTES_PER_PIXEL>().0)
         {
-            let [red, green, blue] = mapper.map(
+            let [red, green, blue] = transfer.encode(
                 half_to_f32(u16::from_le_bytes([channels[0], channels[1]])),
                 half_to_f32(u16::from_le_bytes([channels[2], channels[3]])),
                 half_to_f32(u16::from_le_bytes([channels[4], channels[5]])),
@@ -2008,6 +2090,52 @@ mod tests {
             vec![0; composition.width as usize * composition.height as usize * BYTES_PER_PIXEL];
         composition.fill_rows(0, composition.height, &mut pixels);
         pixels
+    }
+
+    fn f32_to_half(value: f32) -> u16 {
+        let bits = value.to_bits();
+        let sign = ((bits >> 16) & 0x8000) as u16;
+        let exponent = ((bits >> 23) & 0xff) as i32 - 127 + 15;
+        let mantissa = bits & 0x007f_ffff;
+
+        if exponent <= 0 {
+            return sign;
+        }
+        if exponent >= 0x1f {
+            return sign | 0x7c00;
+        }
+
+        sign | ((exponent as u16) << 10) | ((mantissa >> 13) as u16)
+    }
+
+    #[test]
+    fn converts_calibrated_hdr_pixels_with_alpha() {
+        let transfer = DisplayTransfer::from_reported_white(2.5);
+        let input = [
+            [2.5f32, 2.5, 2.5, 1.0],
+            [0.5, 0.25, 1.0, 0.5],
+            [0.0, 0.0, 0.0, 0.0],
+        ];
+        let mut bytes = Vec::new();
+        for pixel in input {
+            for channel in pixel {
+                bytes.extend_from_slice(&f32_to_half(channel).to_le_bytes());
+            }
+        }
+
+        let mapped = D3D11_MAPPED_SUBRESOURCE {
+            pData: bytes.as_mut_ptr().cast(),
+            RowPitch: bytes.len() as u32,
+            ..Default::default()
+        };
+        let pixels =
+            convert_pixels(&mapped, 3, 1, Some(&transfer), true).expect("calibrated pixels");
+
+        let white = transfer.encode(2.5, 2.5, 2.5);
+        let midtone = transfer.encode(0.5, 0.25, 1.0);
+        assert_eq!(pixels[0..4], [white[2], white[1], white[0], 255]);
+        assert_eq!(pixels[4..8], [midtone[2], midtone[1], midtone[0], 128]);
+        assert_eq!(pixels[8..12], [0, 0, 0, 0]);
     }
 
     #[test]
