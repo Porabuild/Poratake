@@ -300,16 +300,22 @@ async fn auto_check_once(cx: &mut gpui::AsyncApp) {
         .background_executor()
         .spawn(async move { check(crate::product::VERSION) })
         .await;
-    cx.update(|cx| {
-        if let Some(state) = cx.try_global::<crate::state::UpdateState>() {
-            if let Ok(mut cell) = state.0.lock() {
-                cell.publish(result);
-            }
+    cx.update(|cx| publish_check(result, cx));
+}
+
+/// What both check entry points do with a finished check — Electron's
+/// `setStatus`: the result lands in the cell and reaches the tray and an
+/// open About page, and a found update starts downloading straight away. It
+/// has to run at app level, because repainting About updates the settings
+/// window and GPUI aborts on updating it from inside its own update.
+pub fn publish_check(result: Status, cx: &mut gpui::App) {
+    if let Some(state) = cx.try_global::<crate::state::UpdateState>() {
+        if let Ok(mut cell) = state.0.lock() {
+            cell.publish(result);
         }
-        sync_tray_status(cx);
-        notify_about_status_changed(cx);
-        start_download(cx);
-    });
+    }
+    sync_update_surfaces(cx);
+    start_download(cx);
 }
 
 /// Moves `Available` into `Downloading` at 0% and returns the artifact to
@@ -332,6 +338,10 @@ pub fn begin_download(cell: &mut UpdateCell) -> Option<(String, Artifact, String
     Some((version, artifact, sha512, notes))
 }
 
+/// Starts the fetch for a waiting `Available`. It syncs the tray but leaves
+/// repainting About to the caller, because the About window's own button
+/// reaches this from inside that window's update, where that repaint is not
+/// allowed. App-level callers pair it with `notify_about_status_changed`.
 pub fn start_download(cx: &mut gpui::App) {
     let Some(state) = cx.try_global::<crate::state::UpdateState>() else {
         return;
@@ -345,7 +355,6 @@ pub fn start_download(cx: &mut gpui::App) {
         return;
     };
     sync_tray_status(cx);
-    notify_about_status_changed(cx);
 
     let (progress_tx, progress_rx) = smol::channel::bounded::<()>(1);
     let progress_cell = shared.clone();
@@ -355,8 +364,7 @@ pub fn start_download(cx: &mut gpui::App) {
             let downloading = cx.update(|cx| {
                 let downloading = matches!(current_status(cx), Status::Downloading { .. });
                 if downloading {
-                    sync_tray_status(cx);
-                    notify_about_status_changed(cx);
+                    sync_update_surfaces(cx);
                 }
                 downloading
             });
@@ -409,15 +417,23 @@ pub fn start_download(cx: &mut gpui::App) {
                     Err(message) => Status::Error { message },
                 });
             }
-            sync_tray_status(cx);
-            notify_about_status_changed(cx);
+            sync_update_surfaces(cx);
         });
     })
     .detach();
 }
 
+/// A cell change published at app level reaches both surfaces that mirror it:
+/// the tray row and an open About page.
+fn sync_update_surfaces(cx: &mut gpui::App) {
+    sync_tray_status(cx);
+    notify_about_status_changed(cx);
+}
+
 /// The `update:status-changed` broadcast for the one window that renders the
-/// status: repaint About when it is open.
+/// status: repaint About when it is open. Must not run while the settings
+/// window is being updated — GPUI aborts on the nested update, and the
+/// registry's liveness probe would forget the window.
 fn notify_about_status_changed(cx: &mut gpui::App) {
     use crate::windows::registry::{self, WindowKind};
     use crate::windows::settings::SettingsWindow;
@@ -928,16 +944,6 @@ mod tests {
 
     #[test]
     fn the_tray_rebuilds_on_the_electron_rule() {
-        let available = |version: &str| Status::Available {
-            version: version.into(),
-            artifact: Artifact {
-                name: "a".into(),
-                url: "u".into(),
-                size: 0,
-            },
-            sha512: "s".into(),
-            notes: None,
-        };
         let downloading = |progress: f32| Status::Downloading {
             version: "1.0".into(),
             progress,
@@ -1186,6 +1192,22 @@ pub fn digest(bytes: &[u8]) -> String {
     let mut hasher = sha2::Sha512::new();
     hasher.update(bytes);
     base64::engine::general_purpose::STANDARD.encode(hasher.finalize())
+}
+
+/// A release waiting to be downloaded, as the tests build it. The URL is not
+/// one, so a test that lets the download run fails it without any network.
+#[cfg(test)]
+pub fn available(version: &str) -> Status {
+    Status::Available {
+        version: version.into(),
+        artifact: Artifact {
+            name: "a".into(),
+            url: "not a url".into(),
+            size: 0,
+        },
+        sha512: "s".into(),
+        notes: None,
+    }
 }
 
 /// Downloads the installer, verifying it against the manifest as it goes, and
