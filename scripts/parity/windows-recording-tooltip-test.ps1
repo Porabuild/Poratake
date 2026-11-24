@@ -2372,29 +2372,44 @@ try {
     Write-Host 'Daemon screenshot positively captured the ordinary white fixture window.'
 
     $tooltipProofMetadataPath = [System.IO.Path]::ChangeExtension($tooltipProofPath, '.json')
-    foreach ($proofFile in @($tooltipProofPath, $tooltipProofMetadataPath)) {
-        if ([System.IO.File]::Exists($proofFile)) { Remove-Item -LiteralPath $proofFile -Force -ErrorAction Stop }
-        if ([System.IO.File]::Exists($proofFile)) { throw "Could not clear stale test-owned tooltip proof: $proofFile" }
-    }
-    if (-not [PoratakeTooltipProbe]::SetCursorPos($hoverX, $hoverY)) { throw 'Could not re-enter the tooltip trigger.' }
-    $shownTooltip = Wait-Until {
-        $handle = Get-VisibleTooltipWindow $application.Id $owner
-        if (-not $handle) { return $null }
-        $text = [PoratakeTooltipProbe]::TooltipText($handle, $owner, [uint32]$application.Id)
-        if ($text -ne $visibleTooltip.Text) { return $null }
-        return @{ Handle = $handle; Text = $text }
-    } 2000 'Tooltip did not return for screenshot exclusion capture.'
-    $shownBounds = New-Object PoratakeTooltipProbe+Rect
-    if (-not [PoratakeTooltipProbe]::GetWindowRect($shownTooltip.Handle, [ref]$shownBounds)) { throw 'Could not read shown tooltip bounds.' }
-    if ($shownBounds.Left -ne $tooltipBounds.Left -or $shownBounds.Top -ne $tooltipBounds.Top -or $shownBounds.Right -ne $tooltipBounds.Right -or $shownBounds.Bottom -ne $tooltipBounds.Bottom) {
-        throw 'Tooltip moved between hidden and shown captures.'
-    }
-    Assert-NativeTooltipPaintProof $tooltipProofPath $shownTooltip.Handle $owner $visibleTooltip.Text $affinity $shownBounds $bounds
     $videoPaintProofPath = Join-Path $evidenceRoot 'native-tooltip-video-paint.png'
     $videoPaintProofMetadataPath = [System.IO.Path]::ChangeExtension($videoPaintProofPath, '.json')
-    Copy-Item -LiteralPath $tooltipProofPath -Destination $videoPaintProofPath -Force -ErrorAction Stop
-    Copy-Item -LiteralPath $tooltipProofMetadataPath -Destination $videoPaintProofMetadataPath -Force -ErrorAction Stop
-    Assert-NativeTooltipPaintProof $videoPaintProofPath $shownTooltip.Handle $owner $visibleTooltip.Text $affinity $shownBounds $bounds
+    $tooltipGeometryVerified = $false
+    $lastProofError = $null
+    foreach ($proofAttempt in 1..4) {
+        try {
+            foreach ($proofFile in @($tooltipProofPath, $tooltipProofMetadataPath)) {
+                if ([System.IO.File]::Exists($proofFile)) { Remove-Item -LiteralPath $proofFile -Force -ErrorAction Stop }
+                if ([System.IO.File]::Exists($proofFile)) { throw "Could not clear stale test-owned tooltip proof: $proofFile" }
+            }
+            if (-not [PoratakeTooltipProbe]::SetCursorPos($hoverX, $hoverY)) { throw 'Could not re-enter the tooltip trigger.' }
+            $shownTooltip = Wait-Until {
+                $handle = Get-VisibleTooltipWindow $application.Id $owner
+                if (-not $handle) { return $null }
+                $text = [PoratakeTooltipProbe]::TooltipText($handle, $owner, [uint32]$application.Id)
+                if ($text -ne $visibleTooltip.Text) { return $null }
+                return @{ Handle = $handle; Text = $text }
+            } 2000 'Tooltip did not return for screenshot exclusion capture.'
+            $shownBounds = New-Object PoratakeTooltipProbe+Rect
+            if (-not [PoratakeTooltipProbe]::GetWindowRect($shownTooltip.Handle, [ref]$shownBounds)) { throw 'Could not read shown tooltip bounds.' }
+            if ($shownBounds.Left -ne $tooltipBounds.Left -or $shownBounds.Top -ne $tooltipBounds.Top -or $shownBounds.Right -ne $tooltipBounds.Right -or $shownBounds.Bottom -ne $tooltipBounds.Bottom) {
+                throw 'Tooltip moved between hidden and shown captures.'
+            }
+            Assert-NativeTooltipPaintProof $tooltipProofPath $shownTooltip.Handle $owner $visibleTooltip.Text $affinity $shownBounds $bounds
+            Copy-Item -LiteralPath $tooltipProofPath -Destination $videoPaintProofPath -Force -ErrorAction Stop
+            Copy-Item -LiteralPath $tooltipProofMetadataPath -Destination $videoPaintProofMetadataPath -Force -ErrorAction Stop
+            Assert-NativeTooltipPaintProof $videoPaintProofPath $shownTooltip.Handle $owner $visibleTooltip.Text $affinity $shownBounds $bounds
+            $tooltipGeometryVerified = $true
+            break
+        } catch {
+            $lastProofError = $_
+            Write-Host "Tooltip paint proof attempt $proofAttempt of 4 failed: $($_.Exception.Message)"
+            if ($proofAttempt -ge 4) { throw }
+            if (-not [PoratakeTooltipProbe]::SetCursorPos($bounds.Left - 20, $bounds.Top - 20)) { throw 'Could not move pointer away before retrying tooltip proof.' }
+            Wait-Until { -not [PoratakeTooltipProbe]::IsWindowVisible($shownTooltip.Handle) } 2000 'Tooltip stayed visible before retrying tooltip proof.' | Out-Null
+        }
+    }
+    if (-not $tooltipGeometryVerified) { throw ('Tooltip paint proof geometry never matched the live tooltip. ' + ($lastProofError | Out-String)) }
     if (-not [PoratakeTooltipProbe]::IsWindowVisible($shownTooltip.Handle)) { throw 'Native tooltip became hidden before the production screenshot.' }
     Capture-TooltipArea 'tooltip-shown-capture' $shownBounds $shownCapture
     if (-not [PoratakeTooltipProbe]::IsWindowVisible($shownTooltip.Handle) -or [PoratakeTooltipProbe]::TooltipText($shownTooltip.Handle, $owner, [uint32]$application.Id) -ne $visibleTooltip.Text) {
