@@ -1,5 +1,6 @@
 mod com;
 mod desktop_frame;
+mod display_calibration;
 mod display_color;
 mod mf;
 mod modules;
@@ -62,6 +63,7 @@ pub fn run() {
         std::process::exit(2);
     }
 
+    display_calibration::prewarm();
     send_event("system:ready", Some(json!({ "pid": std::process::id() })));
 
     let stdin = std::io::stdin();

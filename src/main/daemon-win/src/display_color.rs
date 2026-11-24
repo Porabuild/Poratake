@@ -1,4 +1,4 @@
-use std::sync::OnceLock;
+use windows::Graphics::DirectX::DirectXPixelFormat;
 use windows::Win32::Devices::Display::{
     DISPLAYCONFIG_DEVICE_INFO_GET_ADVANCED_COLOR_INFO,
     DISPLAYCONFIG_DEVICE_INFO_GET_SDR_WHITE_LEVEL, DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME,
@@ -12,46 +12,151 @@ use windows::Win32::Foundation::ERROR_SUCCESS;
 const SCRGB_WHITE_NITS: f32 = 80.0;
 const SDR_WHITE_LEVEL_UNIT: f32 = 1000.0;
 const ADVANCED_COLOR_ENABLED: u32 = 0x2;
-const ENCODE_TABLE_SIZE: usize = 4096;
+pub(crate) const TRANSFER_SIZE: usize = 256;
+pub(crate) const TRANSFER_LEVELS: usize = 4096;
 const LUMA_RED: f32 = 0.2126;
 const LUMA_GREEN: f32 = 0.7152;
 const LUMA_BLUE: f32 = 0.0722;
 
-pub struct ToneMapper {
-    white_scale: f32,
-    table: &'static [u8],
+#[derive(PartialEq)]
+pub struct DisplayTransfer {
+    white: f32,
+    inverse: [u8; TRANSFER_LEVELS],
 }
 
-impl ToneMapper {
-    pub fn new(white_scale: f32) -> Self {
-        ToneMapper {
-            white_scale: white_scale.max(1.0),
-            table: encode_table(),
+pub(crate) fn capture_pixel_format(transfer: Option<&DisplayTransfer>) -> DirectXPixelFormat {
+    match transfer {
+        Some(_) => DirectXPixelFormat::R16G16B16A16Float,
+        None => DirectXPixelFormat::B8G8R8A8UIntNormalized,
+    }
+}
+
+impl DisplayTransfer {
+    pub fn from_reported_white(white_scale: f32) -> Self {
+        let mut encoded = [0u16; TRANSFER_SIZE];
+        for (code, level) in encoded.iter_mut().enumerate() {
+            let value = code as f32 / (TRANSFER_SIZE - 1) as f32;
+            let linear = srgb_decode(value);
+            *level = transfer_index(linear);
+        }
+
+        DisplayTransfer {
+            white: white_scale.max(1.0),
+            inverse: invert(&encoded),
         }
     }
 
-    pub fn map(&self, red: f32, green: f32, blue: f32) -> [u8; 3] {
-        let scale = 1.0 / self.white_scale;
-        let red = (red * scale).max(0.0);
-        let green = (green * scale).max(0.0);
-        let blue = (blue * scale).max(0.0);
-        let luminance = LUMA_RED * red + LUMA_GREEN * green + LUMA_BLUE * blue;
-
-        if luminance <= 1.0 {
-            return [self.encode(red), self.encode(green), self.encode(blue)];
+    pub fn from_probe(samples: &[f32; TRANSFER_SIZE]) -> Option<Self> {
+        let white = samples[TRANSFER_SIZE - 1];
+        if !white.is_finite() || white <= 0.0 {
+            return None;
         }
 
-        let gain = 1.0 / luminance;
+        let mut encoded = [0u16; TRANSFER_SIZE];
+        let mut previous = 0.0f32;
+
+        for (code, sample) in samples.iter().enumerate() {
+            let normalized = (sample / white).clamp(0.0, 1.0).max(previous);
+            previous = normalized;
+            encoded[code] = transfer_index(normalized);
+        }
+
+        if encoded[0] != 0 || encoded[TRANSFER_SIZE - 1] == 0 {
+            return None;
+        }
+
+        Some(DisplayTransfer {
+            white,
+            inverse: invert(&encoded),
+        })
+    }
+
+    pub fn white(&self) -> f32 {
+        self.white
+    }
+
+    pub fn inverse(&self) -> &[u8; TRANSFER_LEVELS] {
+        &self.inverse
+    }
+
+    pub fn with_scaled_white(&self, ratio: f32) -> Option<Self> {
+        if !ratio.is_finite() || ratio <= 0.0 {
+            return None;
+        }
+
+        let white = self.white * ratio;
+        if !white.is_finite() || white <= 0.0 {
+            return None;
+        }
+
+        Some(DisplayTransfer {
+            white: white.max(1.0),
+            inverse: self.inverse,
+        })
+    }
+
+    pub fn encode(&self, red: f32, green: f32, blue: f32) -> [u8; 3] {
+        let scale = 1.0 / self.white;
+        let mut color = [
+            (red * scale).max(0.0),
+            (green * scale).max(0.0),
+            (blue * scale).max(0.0),
+        ];
+        let luminance = LUMA_RED * color[0] + LUMA_GREEN * color[1] + LUMA_BLUE * color[2];
+
+        if luminance > 1.0 {
+            let gain = 1.0 / luminance;
+            color[0] *= gain;
+            color[1] *= gain;
+            color[2] *= gain;
+        }
+
         [
-            self.encode(red * gain),
-            self.encode(green * gain),
-            self.encode(blue * gain),
+            self.lookup(color[0]),
+            self.lookup(color[1]),
+            self.lookup(color[2]),
         ]
     }
 
-    fn encode(&self, value: f32) -> u8 {
-        let index = (value.clamp(0.0, 1.0) * (ENCODE_TABLE_SIZE - 1) as f32 + 0.5) as usize;
-        self.table[index.min(ENCODE_TABLE_SIZE - 1)]
+    fn lookup(&self, value: f32) -> u8 {
+        self.inverse[transfer_index(value) as usize]
+    }
+}
+
+fn invert(encoded: &[u16; TRANSFER_SIZE]) -> [u8; TRANSFER_LEVELS] {
+    let mut inverse = [0u8; TRANSFER_LEVELS];
+    let mut code = 0usize;
+
+    for (level, slot) in inverse.iter_mut().enumerate() {
+        while code + 1 < TRANSFER_SIZE && (encoded[code + 1] as usize) < level {
+            code += 1;
+        }
+
+        let current = encoded[code] as usize;
+        if current >= level || code + 1 >= TRANSFER_SIZE {
+            *slot = code as u8;
+            continue;
+        }
+
+        let next = encoded[code + 1] as usize;
+        let span = next - current;
+        let offset = usize::from((level - current) * 2 >= span);
+        *slot = (code + offset).min(TRANSFER_SIZE - 1) as u8;
+    }
+
+    inverse
+}
+
+fn transfer_index(value: f32) -> u16 {
+    let root = value.clamp(0.0, 1.0).sqrt();
+    (root * (TRANSFER_LEVELS - 1) as f32 + 0.5).clamp(0.0, (TRANSFER_LEVELS - 1) as f32) as u16
+}
+
+fn srgb_decode(value: f32) -> f32 {
+    if value <= 0.04045 {
+        value / 12.92
+    } else {
+        ((value + 0.055) / 1.055).powf(2.4)
     }
 }
 
@@ -72,24 +177,6 @@ pub fn hdr_white_scale(device_name: &str) -> Option<f32> {
     }
 
     None
-}
-
-fn encode_table() -> &'static [u8] {
-    static TABLE: OnceLock<Box<[u8]>> = OnceLock::new();
-
-    TABLE.get_or_init(|| {
-        (0..ENCODE_TABLE_SIZE)
-            .map(|index| {
-                let linear = index as f32 / (ENCODE_TABLE_SIZE - 1) as f32;
-                let encoded = if linear <= 0.0031308 {
-                    linear * 12.92
-                } else {
-                    1.055 * linear.powf(1.0 / 2.4) - 0.055
-                };
-                (encoded * 255.0 + 0.5).clamp(0.0, 255.0) as u8
-            })
-            .collect()
-    })
 }
 
 fn display_paths() -> Option<Vec<DISPLAYCONFIG_PATH_INFO>> {
@@ -180,38 +267,47 @@ fn sdr_white_level(path: &DISPLAYCONFIG_PATH_INFO) -> Option<f32> {
 }
 
 #[cfg(test)]
+pub(crate) fn probe_samples(gamma: f32, white: f32) -> [f32; TRANSFER_SIZE] {
+    let mut samples = [0f32; TRANSFER_SIZE];
+    for (code, sample) in samples.iter_mut().enumerate() {
+        *sample = (code as f32 / (TRANSFER_SIZE - 1) as f32).powf(gamma) * white;
+    }
+    samples
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn maps_sdr_white_to_pure_white() {
-        let mapper = ToneMapper::new(2.5);
-        assert_eq!(mapper.map(2.5, 2.5, 2.5), [255, 255, 255]);
+        let transfer = DisplayTransfer::from_reported_white(2.5);
+        assert_eq!(transfer.encode(2.5, 2.5, 2.5), [255, 255, 255]);
     }
 
     #[test]
     fn maps_midtones_to_their_srgb_value() {
-        let mapper = ToneMapper::new(2.5);
-        let midtone = mapper.map(0.5358, 0.5358, 0.5358);
+        let transfer = DisplayTransfer::from_reported_white(2.5);
+        let midtone = transfer.encode(0.5358, 0.5358, 0.5358);
         assert!(midtone[0].abs_diff(128) <= 2);
     }
 
     #[test]
     fn keeps_black_at_black() {
-        let mapper = ToneMapper::new(2.5);
-        assert_eq!(mapper.map(0.0, -0.01, 0.0), [0, 0, 0]);
+        let transfer = DisplayTransfer::from_reported_white(2.5);
+        assert_eq!(transfer.encode(0.0, -0.01, 0.0), [0, 0, 0]);
     }
 
     #[test]
     fn clamps_content_brighter_than_sdr_white() {
-        let mapper = ToneMapper::new(2.5);
-        assert_eq!(mapper.map(12.0, 12.0, 12.0), [255, 255, 255]);
+        let transfer = DisplayTransfer::from_reported_white(2.5);
+        assert_eq!(transfer.encode(12.0, 12.0, 12.0), [255, 255, 255]);
     }
 
     #[test]
     fn keeps_the_hue_of_highlights_instead_of_clipping_channels() {
-        let mapper = ToneMapper::new(1.0);
-        let highlight = mapper.map(6.0, 3.0, 0.6);
+        let transfer = DisplayTransfer::from_reported_white(1.0);
+        let highlight = transfer.encode(6.0, 3.0, 0.6);
 
         assert!(highlight[0] > highlight[1]);
         assert!(highlight[1] > highlight[2]);
@@ -219,22 +315,99 @@ mod tests {
 
     #[test]
     fn leaves_the_whole_sdr_range_untouched() {
-        let mapper = ToneMapper::new(1.0);
+        let transfer = DisplayTransfer::from_reported_white(1.0);
 
         for step in 0..=10 {
             let value = step as f32 / 10.0;
-            let direct = mapper.map(value, value, value);
+            let direct = transfer.encode(value, value, value);
             assert_eq!(direct[0], direct[1]);
             assert_eq!(direct[1], direct[2]);
         }
 
-        assert_eq!(mapper.map(1.0, 1.0, 1.0), [255, 255, 255]);
-        assert_eq!(mapper.map(0.2159, 0.2159, 0.2159)[0], 128);
+        assert_eq!(transfer.encode(1.0, 1.0, 1.0), [255, 255, 255]);
+        assert_eq!(transfer.encode(0.2159, 0.2159, 0.2159)[0], 128);
     }
 
     #[test]
     fn never_scales_below_sdr_white() {
-        let mapper = ToneMapper::new(0.4);
-        assert_eq!(mapper.map(1.0, 1.0, 1.0), [255, 255, 255]);
+        let transfer = DisplayTransfer::from_reported_white(0.4);
+        assert_eq!(transfer.encode(1.0, 1.0, 1.0), [255, 255, 255]);
+    }
+
+    fn assert_recovers_codes(transfer: &DisplayTransfer, samples: &[f32; TRANSFER_SIZE]) {
+        for (code, sample) in samples.iter().enumerate() {
+            let mapped = transfer.encode(*sample, *sample, *sample);
+            assert!(
+                mapped[0].abs_diff(code as u8) <= 1,
+                "code {code} mapped to {mapped:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn recovers_srgb_codes_from_an_srgb_probe() {
+        let mut samples = [0f32; TRANSFER_SIZE];
+        for (code, sample) in samples.iter_mut().enumerate() {
+            let value = code as f32 / (TRANSFER_SIZE - 1) as f32;
+            *sample = srgb_decode(value) * 6.0;
+        }
+
+        let transfer = DisplayTransfer::from_probe(&samples).expect("srgb transfer");
+        assert_recovers_codes(&transfer, &samples);
+    }
+
+    #[test]
+    fn recovers_gamma_codes_from_a_patched_probe() {
+        let samples = probe_samples(2.4, 6.0);
+        let transfer = DisplayTransfer::from_probe(&samples).expect("gamma transfer");
+        assert_recovers_codes(&transfer, &samples);
+    }
+
+    #[test]
+    fn recovers_codes_when_the_display_white_is_boosted() {
+        let samples = probe_samples(2.4, 12.0);
+        let transfer = DisplayTransfer::from_probe(&samples).expect("boosted transfer");
+        assert_eq!(transfer.white(), 12.0);
+        assert_recovers_codes(&transfer, &samples);
+    }
+
+    #[test]
+    fn scaling_the_white_preserves_the_measured_curve() {
+        let samples = probe_samples(2.4, 6.0);
+        let transfer = DisplayTransfer::from_probe(&samples).expect("gamma transfer");
+        let scaled = transfer.with_scaled_white(2.0).expect("scaled transfer");
+
+        assert_eq!(scaled.white(), 12.0);
+        assert_recovers_codes(&scaled, &probe_samples(2.4, 12.0));
+    }
+
+    #[test]
+    fn rejects_an_unusable_white_scale() {
+        let transfer = DisplayTransfer::from_reported_white(6.0);
+        assert!(transfer.with_scaled_white(0.0).is_none());
+        assert!(transfer.with_scaled_white(f32::NAN).is_none());
+    }
+
+    #[test]
+    fn keeps_highlight_hue_after_the_calibrated_lookup() {
+        let samples = probe_samples(2.4, 6.0);
+        let transfer = DisplayTransfer::from_probe(&samples).expect("gamma transfer");
+        let highlight = transfer.encode(30.0, 12.0, 3.0);
+
+        assert!(highlight[0] > highlight[1]);
+        assert!(highlight[1] > highlight[2]);
+    }
+
+    #[test]
+    fn rejects_an_empty_probe() {
+        let samples = [0f32; TRANSFER_SIZE];
+        assert!(DisplayTransfer::from_probe(&samples).is_none());
+    }
+
+    #[test]
+    fn rejects_a_probe_with_a_raised_black() {
+        let mut samples = probe_samples(2.4, 6.0);
+        samples[0] = samples[1];
+        assert!(DisplayTransfer::from_probe(&samples).is_none());
     }
 }

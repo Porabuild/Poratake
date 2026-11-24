@@ -1,25 +1,25 @@
+use crate::display_color::{DisplayTransfer, TRANSFER_LEVELS};
 use poratake_daemon_common::geometry::fit_rect;
 use std::ffi::CStr;
 use windows::Win32::Graphics::Direct3D::Fxc::{D3DCOMPILE_OPTIMIZATION_LEVEL3, D3DCompile};
 use windows::Win32::Graphics::Direct3D::{D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST, ID3DBlob};
 use windows::Win32::Graphics::Direct3D11::{
-    D3D11_BIND_CONSTANT_BUFFER, D3D11_BUFFER_DESC, D3D11_COMPARISON_NEVER, D3D11_CPU_ACCESS_WRITE,
-    D3D11_FILTER_MIN_MAG_MIP_LINEAR, D3D11_MAP_WRITE_DISCARD, D3D11_MAPPED_SUBRESOURCE,
-    D3D11_SAMPLER_DESC, D3D11_TEXTURE_ADDRESS_CLAMP, D3D11_USAGE_DYNAMIC, D3D11_VIEWPORT,
-    ID3D11Buffer, ID3D11Device, ID3D11DeviceContext, ID3D11PixelShader, ID3D11RenderTargetView,
-    ID3D11SamplerState, ID3D11ShaderResourceView, ID3D11Texture2D, ID3D11VertexShader,
+    D3D11_BIND_CONSTANT_BUFFER, D3D11_BIND_SHADER_RESOURCE, D3D11_BUFFER_DESC,
+    D3D11_COMPARISON_NEVER, D3D11_CPU_ACCESS_WRITE, D3D11_FILTER_MIN_MAG_MIP_LINEAR,
+    D3D11_MAP_WRITE_DISCARD, D3D11_MAPPED_SUBRESOURCE, D3D11_SAMPLER_DESC, D3D11_SUBRESOURCE_DATA,
+    D3D11_TEXTURE_ADDRESS_CLAMP, D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT, D3D11_USAGE_DYNAMIC,
+    D3D11_VIEWPORT, ID3D11Buffer, ID3D11Device, ID3D11DeviceContext, ID3D11PixelShader,
+    ID3D11RenderTargetView, ID3D11SamplerState, ID3D11ShaderResourceView, ID3D11Texture2D,
+    ID3D11VertexShader,
 };
+use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_R8_UNORM, DXGI_SAMPLE_DESC};
 use windows::core::PCSTR;
 
-#[cfg(test)]
-const LUMA_RED: f32 = 0.2126;
-#[cfg(test)]
-const LUMA_GREEN: f32 = 0.7152;
-#[cfg(test)]
-const LUMA_BLUE: f32 = 0.0722;
+const TRANSFER_TEXTURE_WIDTH: u32 = TRANSFER_LEVELS as u32;
 
 const SHADER_SOURCE: &str = r#"
 Texture2D<float4> Source : register(t0);
+Texture2D<float> Transfer : register(t1);
 SamplerState Bilinear : register(s0);
 
 cbuffer Params : register(b0)
@@ -46,12 +46,10 @@ struct FitVertex
 
 static const float3 Luma = float3(0.2126, 0.7152, 0.0722);
 
-float EncodeChannel(float value)
+float LookupTransfer(float value)
 {
-    float clamped = saturate(value);
-    return clamped <= 0.0031308
-        ? clamped * 12.92
-        : 1.055 * pow(clamped, 1.0 / 2.4) - 0.055;
+    int index = (int)(sqrt(saturate(value)) * 4095.0 + 0.5);
+    return Transfer.Load(int3(index, 0, 0)).r;
 }
 
 float3 ToneMap(float3 color, float inverseWhiteScale)
@@ -65,9 +63,9 @@ float3 ToneMap(float3 color, float inverseWhiteScale)
     }
 
     return float3(
-        EncodeChannel(linearColor.r),
-        EncodeChannel(linearColor.g),
-        EncodeChannel(linearColor.b));
+        LookupTransfer(linearColor.r),
+        LookupTransfer(linearColor.g),
+        LookupTransfer(linearColor.b));
 }
 
 float2 TriangleCorner(uint id)
@@ -129,41 +127,6 @@ struct FitParams {
     texture_extent: [f32; 2],
     inverse_white_scale: f32,
     padding: f32,
-}
-
-#[cfg(test)]
-pub fn reference_tone_map(white_scale: f32, red: f32, green: f32, blue: f32) -> [u8; 3] {
-    let inverse = 1.0 / white_scale.max(1.0);
-    let mut color = [
-        (red * inverse).max(0.0),
-        (green * inverse).max(0.0),
-        (blue * inverse).max(0.0),
-    ];
-    let luminance = LUMA_RED * color[0] + LUMA_GREEN * color[1] + LUMA_BLUE * color[2];
-
-    if luminance > 1.0 {
-        let gain = 1.0 / luminance;
-        for channel in &mut color {
-            *channel *= gain;
-        }
-    }
-
-    [
-        encode_channel(color[0]),
-        encode_channel(color[1]),
-        encode_channel(color[2]),
-    ]
-}
-
-#[cfg(test)]
-fn encode_channel(value: f32) -> u8 {
-    let clamped = value.clamp(0.0, 1.0);
-    let encoded = if clamped <= 0.0031308 {
-        clamped * 12.92
-    } else {
-        1.055 * clamped.powf(1.0 / 2.4) - 0.055
-    };
-    (encoded * 255.0 + 0.5).clamp(0.0, 255.0) as u8
 }
 
 fn compile(entry: &CStr, target: &CStr) -> Result<ID3DBlob, String> {
@@ -231,6 +194,49 @@ pub fn target_view(
             .map_err(|error| format!("Failed to view the encoder texture: {error}"))?;
     }
     view.ok_or_else(|| "Encoder texture view was not created".to_string())
+}
+
+fn transfer_view(
+    device: &ID3D11Device,
+    transfer: &DisplayTransfer,
+) -> Result<ID3D11ShaderResourceView, String> {
+    let descriptor = D3D11_TEXTURE2D_DESC {
+        Width: TRANSFER_TEXTURE_WIDTH,
+        Height: 1,
+        MipLevels: 1,
+        ArraySize: 1,
+        Format: DXGI_FORMAT_R8_UNORM,
+        SampleDesc: DXGI_SAMPLE_DESC {
+            Count: 1,
+            Quality: 0,
+        },
+        Usage: D3D11_USAGE_DEFAULT,
+        BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
+        CPUAccessFlags: 0,
+        MiscFlags: 0,
+    };
+    let initial = D3D11_SUBRESOURCE_DATA {
+        pSysMem: transfer.inverse().as_ptr().cast(),
+        SysMemPitch: TRANSFER_TEXTURE_WIDTH,
+        SysMemSlicePitch: 0,
+    };
+
+    let mut texture = None;
+    unsafe {
+        device
+            .CreateTexture2D(&descriptor, Some(&initial), Some(&mut texture))
+            .map_err(|error| format!("Failed to create the display transfer: {error}"))?;
+    }
+    let texture: ID3D11Texture2D =
+        texture.ok_or_else(|| "The display transfer texture was not created".to_string())?;
+
+    let mut view = None;
+    unsafe {
+        device
+            .CreateShaderResourceView(&texture, None, Some(&mut view))
+            .map_err(|error| format!("Failed to view the display transfer: {error}"))?;
+    }
+    view.ok_or_else(|| "The display transfer view was not created".to_string())
 }
 
 fn create_shaders(
@@ -304,18 +310,20 @@ pub struct ToneMapStage {
     vertex: ID3D11VertexShader,
     pixel: ID3D11PixelShader,
     params: ID3D11Buffer,
+    transfer: ID3D11ShaderResourceView,
     inverse_white_scale: f32,
 }
 
 impl ToneMapStage {
-    pub fn new(device: &ID3D11Device, white_scale: f32) -> Result<Self, String> {
+    pub fn new(device: &ID3D11Device, transfer: &DisplayTransfer) -> Result<Self, String> {
         let (vertex, pixel) = create_shaders(device, c"VertexMain", c"PixelMain", "tone map")?;
 
         Ok(Self {
             vertex,
             pixel,
             params: create_constants(device, std::mem::size_of::<Params>(), "tone map")?,
-            inverse_white_scale: 1.0 / white_scale.max(1.0),
+            transfer: transfer_view(device, transfer)?,
+            inverse_white_scale: 1.0 / transfer.white(),
         })
     }
 
@@ -351,9 +359,11 @@ impl ToneMapStage {
             context.VSSetShader(&self.vertex, None);
             context.PSSetShader(&self.pixel, None);
             context.PSSetShaderResources(0, Some(&[Some(source.clone())]));
+            context.PSSetShaderResources(1, Some(&[Some(self.transfer.clone())]));
             context.PSSetConstantBuffers(0, Some(&[Some(self.params.clone())]));
             context.Draw(3, 0);
             context.PSSetShaderResources(0, Some(&[None]));
+            context.PSSetShaderResources(1, Some(&[None]));
             context.OMSetRenderTargets(None, None);
         }
 
@@ -369,11 +379,12 @@ pub struct FitStage {
     pixel: ID3D11PixelShader,
     params: ID3D11Buffer,
     sampler: ID3D11SamplerState,
+    transfer: Option<ID3D11ShaderResourceView>,
     inverse_white_scale: f32,
 }
 
 impl FitStage {
-    pub fn new(device: &ID3D11Device, white_scale: Option<f32>) -> Result<Self, String> {
+    pub fn new(device: &ID3D11Device, transfer: Option<&DisplayTransfer>) -> Result<Self, String> {
         let (vertex, pixel) = create_shaders(device, c"FitVertexMain", c"FitPixelMain", "fit")?;
         let descriptor = D3D11_SAMPLER_DESC {
             Filter: D3D11_FILTER_MIN_MAG_MIP_LINEAR,
@@ -392,12 +403,21 @@ impl FitStage {
                 .map_err(|error| format!("Failed to create the fit sampler: {error}"))?;
         }
 
+        let (transfer, inverse_white_scale) = match transfer {
+            Some(transfer) => (
+                Some(transfer_view(device, transfer)?),
+                1.0 / transfer.white(),
+            ),
+            None => (None, 0.0),
+        };
+
         Ok(Self {
             vertex,
             pixel,
             params: create_constants(device, std::mem::size_of::<FitParams>(), "fit")?,
             sampler: sampler.ok_or("The fit sampler was not created")?,
-            inverse_white_scale: white_scale.map_or(0.0, |scale| 1.0 / scale.max(1.0)),
+            transfer,
+            inverse_white_scale,
         })
     }
 
@@ -441,10 +461,16 @@ impl FitStage {
             context.VSSetShader(&self.vertex, None);
             context.PSSetShader(&self.pixel, None);
             context.PSSetShaderResources(0, Some(&[Some(source.clone())]));
+            if let Some(transfer) = &self.transfer {
+                context.PSSetShaderResources(1, Some(&[Some(transfer.clone())]));
+            }
             context.PSSetSamplers(0, Some(&[Some(self.sampler.clone())]));
             context.PSSetConstantBuffers(1, Some(&[Some(self.params.clone())]));
             context.Draw(3, 0);
             context.PSSetShaderResources(0, Some(&[None]));
+            if self.transfer.is_some() {
+                context.PSSetShaderResources(1, Some(&[None]));
+            }
             context.OMSetRenderTargets(None, None);
         }
 
@@ -453,60 +479,9 @@ impl FitStage {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::reference_tone_map;
-    use crate::display_color::ToneMapper;
-
-    fn assert_matches(white_scale: f32, red: f32, green: f32, blue: f32) {
-        let expected = ToneMapper::new(white_scale).map(red, green, blue);
-        let actual = reference_tone_map(white_scale, red, green, blue);
-
-        for channel in 0..3 {
-            assert!(
-                expected[channel].abs_diff(actual[channel]) <= 1,
-                "white_scale {white_scale} rgb ({red}, {green}, {blue}) channel {channel}: screenshot {expected:?} shader {actual:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn matches_the_screenshot_mapper_across_the_sdr_range() {
-        for step in 0..=64 {
-            let value = step as f32 / 64.0;
-            assert_matches(2.5, value, value, value);
-        }
-    }
-
-    #[test]
-    fn matches_the_screenshot_mapper_on_highlights() {
-        for step in 1..=32 {
-            let value = 1.0 + step as f32 / 4.0;
-            assert_matches(2.5, value, value * 0.5, value * 0.25);
-        }
-    }
-
-    #[test]
-    fn matches_the_screenshot_mapper_across_white_levels() {
-        for scale in [1.0, 1.25, 2.0, 2.5, 4.0, 6.25] {
-            assert_matches(scale, 0.8, 0.4, 0.1);
-            assert_matches(scale, 3.0, 3.0, 3.0);
-        }
-    }
-
-    #[test]
-    fn clamps_negative_channels_to_black() {
-        assert_eq!(reference_tone_map(2.5, -1.0, -1.0, -1.0), [0, 0, 0]);
-    }
-
-    #[test]
-    fn maps_white_at_the_sdr_level_to_full_white() {
-        assert_eq!(reference_tone_map(2.5, 2.5, 2.5, 2.5), [255, 255, 255]);
-    }
-}
-
-#[cfg(test)]
 mod gpu_tests {
-    use super::{FitStage, ToneMapStage, reference_tone_map};
+    use super::{FitStage, ToneMapStage};
+    use crate::display_color::{DisplayTransfer, probe_samples};
     use windows::Win32::Foundation::HMODULE;
     use windows::Win32::Graphics::Direct3D::{D3D_DRIVER_TYPE_WARP, D3D_FEATURE_LEVEL_11_0};
     use windows::Win32::Graphics::Direct3D11::{
@@ -578,12 +553,23 @@ mod gpu_tests {
 
     #[test]
     fn shader_compiles_and_matches_the_reference_on_a_real_device() {
+        assert_tone_map_matches(&DisplayTransfer::from_reported_white(WHITE_SCALE));
+    }
+
+    #[test]
+    fn shader_matches_a_calibrated_gamma_display() {
+        let samples = probe_samples(2.4, 6.0);
+        let transfer = DisplayTransfer::from_probe(&samples).expect("gamma transfer");
+        assert_tone_map_matches(&transfer);
+    }
+
+    fn assert_tone_map_matches(transfer: &DisplayTransfer) {
         let Some((device, context)) = create_device() else {
             eprintln!("skipping: no D3D11 WARP device available");
             return;
         };
 
-        let stage = ToneMapStage::new(&device, WHITE_SCALE).expect("tone map stage");
+        let stage = ToneMapStage::new(&device, transfer).expect("tone map stage");
 
         let pixels = source_pixels();
         let halves: Vec<u16> = pixels
@@ -684,7 +670,7 @@ mod gpu_tests {
             for x in 0..CROP_WIDTH {
                 let source_index = ((y + CROP_Y) * SOURCE_WIDTH + (x + CROP_X)) as usize;
                 let pixel = pixels[source_index];
-                let expected = reference_tone_map(WHITE_SCALE, pixel[0], pixel[1], pixel[2]);
+                let expected = transfer.encode(pixel[0], pixel[1], pixel[2]);
                 let offset = (y * mapped.RowPitch + x * 4) as usize;
                 let actual = [bytes[offset + 2], bytes[offset + 1], bytes[offset]];
 
@@ -934,7 +920,8 @@ mod gpu_tests {
         }
         let source: ID3D11Texture2D = source.expect("source texture");
         let target = render_target(&device, SOURCE_WIDTH, SOURCE_HEIGHT);
-        let stage = FitStage::new(&device, Some(WHITE_SCALE)).expect("fit stage");
+        let transfer = DisplayTransfer::from_reported_white(WHITE_SCALE);
+        let stage = FitStage::new(&device, Some(&transfer)).expect("fit stage");
 
         stage
             .run(
@@ -950,7 +937,7 @@ mod gpu_tests {
         let read = read_back(&device, &context, &target, SOURCE_WIDTH, SOURCE_HEIGHT);
         let mut mismatches = Vec::new();
         for (index, pixel) in pixels.iter().enumerate() {
-            let expected = reference_tone_map(WHITE_SCALE, pixel[0], pixel[1], pixel[2]);
+            let expected = transfer.encode(pixel[0], pixel[1], pixel[2]);
             let actual = read[index];
             if (0..3).any(|channel| expected[channel].abs_diff(actual[channel]) > 1) {
                 mismatches.push(format!("{index}: expected {expected:?} gpu {actual:?}"));

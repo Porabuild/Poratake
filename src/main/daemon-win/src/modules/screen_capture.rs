@@ -6,7 +6,8 @@ use super::recording_audio::{AudioCaptureSet, AudioDevice};
 use super::recording_camera::{CameraRecordingConfig, CameraSyncClock, RecordingCamera};
 use super::recording_input::{InputTracker, TrackerBounds, TrackerSource};
 use crate::com::retain_process_mta;
-use crate::display_color::hdr_white_scale;
+use crate::display_calibration::transfer_for_blocking;
+use crate::display_color::{DisplayTransfer, capture_pixel_format};
 use crate::mf::{create_attributes, create_video_type};
 use crate::tone_map::{FitStage, ToneMapStage, source_view, target_view};
 use std::ffi::c_void;
@@ -839,7 +840,7 @@ impl RecordingRuntime {
             device,
             context,
             layout.crop,
-            layout.white_scale,
+            layout.transfer,
             layout.fitted,
         ) {
             Ok(encoder) => encoder,
@@ -951,8 +952,8 @@ impl RecordingRuntime {
         }
 
         if let Some(encoder) = self.encoder.as_mut() {
-            if refresh.white_scale_changed {
-                encoder.set_fit_white_scale(refresh.white_scale)?;
+            if refresh.transfer_changed {
+                encoder.set_fit_transfer(refresh.transfer)?;
             }
             encoder.forget_source_views();
         }
@@ -1465,6 +1466,8 @@ impl CaptureTarget {
             ));
         }
 
+        let transfer = transfer_for_blocking(&self.monitor.device);
+
         if self.window.is_some() {
             let width = content.Width & !1;
             let height = content.Height & !1;
@@ -1485,7 +1488,7 @@ impl CaptureTarget {
                     width,
                     height,
                 },
-                white_scale: hdr_white_scale(&self.monitor.device),
+                transfer,
                 fitted: true,
             });
         }
@@ -1552,7 +1555,7 @@ impl CaptureTarget {
                 back: 1,
             },
             tracker_bounds,
-            white_scale: hdr_white_scale(&self.monitor.device),
+            transfer,
             fitted: false,
         })
     }
@@ -1563,15 +1566,8 @@ struct CaptureLayout {
     height: u32,
     crop: D3D11_BOX,
     tracker_bounds: CaptureRect,
-    white_scale: Option<f32>,
+    transfer: Option<Arc<DisplayTransfer>>,
     fitted: bool,
-}
-
-fn capture_pixel_format(white_scale: Option<f32>) -> DirectXPixelFormat {
-    match white_scale {
-        Some(_) => DirectXPixelFormat::R16G16B16A16Float,
-        None => DirectXPixelFormat::B8G8R8A8UIntNormalized,
-    }
 }
 
 fn monitor_contains(rect: RECT, area: CaptureRect) -> bool {
@@ -1661,7 +1657,7 @@ struct WindowsCapture {
     pool_size: SizeInt32,
     target_window: Option<isize>,
     monitor_handle: isize,
-    white_scale: Option<f32>,
+    transfer: Option<Arc<DisplayTransfer>>,
     frame_token: i64,
     closed_token: i64,
 }
@@ -1707,7 +1703,8 @@ impl WindowsCapture {
         let layout = target.layout(content_size)?;
         let target_window = target.window;
         let monitor_handle = target.monitor.handle;
-        let format = capture_pixel_format(layout.white_scale);
+        let transfer = layout.transfer.clone();
+        let format = capture_pixel_format(transfer.as_deref());
         let pool = Direct3D11CaptureFramePool::CreateFreeThreaded(&device, format, 4, content_size)
             .map_err(|error| {
                 RecorderError::capture(format!("Failed to create capture frame pool: {error}"))
@@ -1766,7 +1763,7 @@ impl WindowsCapture {
                 pool_size: content_size,
                 target_window,
                 monitor_handle,
-                white_scale: layout.white_scale,
+                transfer,
                 frame_token,
                 closed_token,
             },
@@ -1787,17 +1784,17 @@ impl WindowsCapture {
         content: SizeInt32,
     ) -> Result<WindowPoolRefresh, RecorderError> {
         let Some(handle) = self.target_window else {
-            return Ok(WindowPoolRefresh::unchanged(self.white_scale));
+            return Ok(WindowPoolRefresh::unchanged(self.transfer.clone()));
         };
         if content.Width < 1 || content.Height < 1 {
-            return Ok(WindowPoolRefresh::unchanged(self.white_scale));
+            return Ok(WindowPoolRefresh::unchanged(self.transfer.clone()));
         }
 
         let monitor =
             unsafe { MonitorFromWindow(HWND(handle as *mut c_void), MONITOR_DEFAULTTONEAREST) };
         let next_monitor = monitor.0 as isize;
         let monitor_changed = next_monitor != self.monitor_handle;
-        let next_white_scale = if monitor_changed {
+        let next_transfer = if monitor_changed {
             let monitors = enumerate_monitors()?;
             let target = monitors
                 .iter()
@@ -1805,11 +1802,11 @@ impl WindowsCapture {
                 .ok_or_else(|| {
                     RecorderError::capture("Failed to resolve the window's current display")
                 })?;
-            hdr_white_scale(&target.device)
+            transfer_for_blocking(&target.device)
         } else {
-            self.white_scale
+            self.transfer.clone()
         };
-        let next_format = capture_pixel_format(next_white_scale);
+        let next_format = capture_pixel_format(next_transfer.as_deref());
         if !pool_needs_recreation(
             self.monitor_handle,
             self.pool_size,
@@ -1818,7 +1815,7 @@ impl WindowsCapture {
             content,
             next_format,
         ) {
-            return Ok(WindowPoolRefresh::unchanged(self.white_scale));
+            return Ok(WindowPoolRefresh::unchanged(self.transfer.clone()));
         }
 
         self.pool
@@ -1826,15 +1823,15 @@ impl WindowsCapture {
             .map_err(|error| {
                 RecorderError::capture(format!("Failed to refresh the capture frame pool: {error}"))
             })?;
-        let white_scale_changed = next_white_scale != self.white_scale;
+        let transfer_changed = next_transfer != self.transfer;
         self.monitor_handle = next_monitor;
         self.format = next_format;
         self.pool_size = content;
-        self.white_scale = next_white_scale;
+        self.transfer = next_transfer.clone();
         Ok(WindowPoolRefresh {
             recreated: true,
-            white_scale: next_white_scale,
-            white_scale_changed,
+            transfer: next_transfer,
+            transfer_changed,
         })
     }
 
@@ -1848,16 +1845,16 @@ impl WindowsCapture {
 
 struct WindowPoolRefresh {
     recreated: bool,
-    white_scale: Option<f32>,
-    white_scale_changed: bool,
+    transfer: Option<Arc<DisplayTransfer>>,
+    transfer_changed: bool,
 }
 
 impl WindowPoolRefresh {
-    fn unchanged(white_scale: Option<f32>) -> Self {
+    fn unchanged(transfer: Option<Arc<DisplayTransfer>>) -> Self {
         Self {
             recreated: false,
-            white_scale,
-            white_scale_changed: false,
+            transfer,
+            transfer_changed: false,
         }
     }
 }
@@ -2017,7 +2014,7 @@ impl MediaFoundationEncoder {
         device: ID3D11Device,
         context: ID3D11DeviceContext,
         crop: D3D11_BOX,
-        white_scale: Option<f32>,
+        transfer: Option<Arc<DisplayTransfer>>,
         fitted: bool,
     ) -> Result<Self, RecorderError> {
         unsafe {
@@ -2050,7 +2047,7 @@ impl MediaFoundationEncoder {
             device,
             context,
             crop,
-            white_scale,
+            transfer,
             fitted,
         );
         if result.is_err() {
@@ -2071,7 +2068,7 @@ impl MediaFoundationEncoder {
         device: ID3D11Device,
         context: ID3D11DeviceContext,
         crop: D3D11_BOX,
-        white_scale: Option<f32>,
+        transfer: Option<Arc<DisplayTransfer>>,
         fitted: bool,
     ) -> Result<Self, RecorderError> {
         let mut manager = None;
@@ -2202,12 +2199,14 @@ impl MediaFoundationEncoder {
             .collect();
 
         let fit = match fitted {
-            true => Some(FitStage::new(&device, white_scale).map_err(RecorderError::capture)?),
+            true => {
+                Some(FitStage::new(&device, transfer.as_deref()).map_err(RecorderError::capture)?)
+            }
             false => None,
         };
-        let tone_map = match (fitted, white_scale) {
-            (false, Some(scale)) => {
-                Some(ToneMapStage::new(&device, scale).map_err(RecorderError::capture)?)
+        let tone_map = match (fitted, transfer.as_deref()) {
+            (false, Some(transfer)) => {
+                Some(ToneMapStage::new(&device, transfer).map_err(RecorderError::capture)?)
             }
             _ => None,
         };
@@ -2245,8 +2244,12 @@ impl MediaFoundationEncoder {
         self.source_views.clear();
     }
 
-    fn set_fit_white_scale(&mut self, white_scale: Option<f32>) -> Result<(), RecorderError> {
-        self.fit = Some(FitStage::new(&self.device, white_scale).map_err(RecorderError::capture)?);
+    fn set_fit_transfer(
+        &mut self,
+        transfer: Option<Arc<DisplayTransfer>>,
+    ) -> Result<(), RecorderError> {
+        self.fit =
+            Some(FitStage::new(&self.device, transfer.as_deref()).map_err(RecorderError::capture)?);
         Ok(())
     }
 
@@ -2580,8 +2583,9 @@ mod tests {
 
     #[test]
     fn captures_float_pixels_only_on_hdr_displays() {
+        let transfer = DisplayTransfer::from_reported_white(2.5);
         assert_eq!(
-            capture_pixel_format(Some(2.5)),
+            capture_pixel_format(Some(&transfer)),
             DirectXPixelFormat::R16G16B16A16Float
         );
         assert_eq!(
