@@ -52,7 +52,7 @@ struct OverlaySession {
     timer_cancel: Option<smol::channel::Sender<bool>>,
     #[cfg(target_os = "macos")]
     timer_release_owner: Option<u64>,
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     pooled: Vec<PooledOverlay>,
     outlined_window_id: Option<i64>,
     #[cfg(target_os = "macos")]
@@ -64,10 +64,10 @@ struct OverlaySession {
 #[derive(Clone)]
 struct TrackedOverlay {
     handle: AnyWindowHandle,
-    #[cfg(windows)]
-    display_id: DisplayId,
+    #[cfg(any(windows, target_os = "macos"))]
+    display_id: Option<DisplayId>,
     generation: u64,
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     focus: bool,
 }
 
@@ -80,7 +80,7 @@ enum PooledSurfaceState {
     Live,
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 struct PooledOverlay {
     handle: gpui::WindowHandle<AreaOverlay>,
     display_id: DisplayId,
@@ -515,38 +515,67 @@ fn take_all(cx: &mut App) -> (Vec<TrackedOverlay>, Option<u64>) {
 }
 
 fn dispose_overlays(handles: Vec<TrackedOverlay>, cx: &mut App) {
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     let mut parked = false;
     for tracked in handles {
         #[cfg(windows)]
-        if let Some(handle) = tracked.handle.downcast::<AreaOverlay>() {
-            if handle
-                .update(cx, |overlay, window, cx| {
-                    let needs_clear = overlay.surface_state != PooledSurfaceState::Clean;
-                    overlay.reset_for_park(window, cx);
-                    cx.notify();
-                    if !needs_clear {
-                        park_overlay(window);
-                        return;
-                    }
-                    overlay.surface_state = PooledSurfaceState::Dirty;
-                    window.refresh();
-                    if cloak_for_park(window) {
-                        schedule_park_hide(
-                            cx.entity().downgrade(),
-                            overlay.park_generation,
-                            window,
-                        );
-                    } else {
-                        park_overlay(window);
-                    }
-                })
-                .is_ok()
+        if let (Some(display_id), Some(handle)) =
+            (tracked.display_id, tracked.handle.downcast::<AreaOverlay>())
+        {
+            if !session(cx)
+                .pooled
+                .iter()
+                .any(|entry| entry.display_id == display_id)
+                && handle
+                    .update(cx, |overlay, window, cx| {
+                        let needs_clear = overlay.surface_state != PooledSurfaceState::Clean;
+                        overlay.reset_for_park(window, cx);
+                        cx.notify();
+                        if !needs_clear {
+                            park_overlay(window);
+                            return;
+                        }
+                        overlay.surface_state = PooledSurfaceState::Dirty;
+                        window.refresh();
+                        if cloak_for_park(window) {
+                            schedule_park_hide(
+                                cx.entity().downgrade(),
+                                overlay.park_generation,
+                                window,
+                            );
+                        } else {
+                            park_overlay(window);
+                        }
+                    })
+                    .is_ok()
             {
-                session(cx).pooled.push(PooledOverlay {
-                    handle,
-                    display_id: tracked.display_id,
-                });
+                session(cx)
+                    .pooled
+                    .push(PooledOverlay { handle, display_id });
+                parked = true;
+                continue;
+            }
+        }
+        #[cfg(target_os = "macos")]
+        if let (Some(display_id), Some(handle)) =
+            (tracked.display_id, tracked.handle.downcast::<AreaOverlay>())
+        {
+            if !session(cx)
+                .pooled
+                .iter()
+                .any(|entry| entry.display_id == display_id)
+                && handle
+                    .update(cx, |overlay, window, cx| {
+                        let origin = overlay.display_bounds.origin;
+                        overlay.reset_for_park(window, cx);
+                        cx.notify();
+                        park_macos_overlay(window, origin, cx);
+                    })
+                    .is_ok()
+            {
+                session(cx)
+                    .pooled
+                    .push(PooledOverlay { handle, display_id });
                 parked = true;
                 continue;
             }
@@ -557,7 +586,7 @@ fn dispose_overlays(handles: Vec<TrackedOverlay>, cx: &mut App) {
             window.remove_window();
         });
     }
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     if parked {
         crate::system::memory::schedule_idle_reclaim(cx);
     }
@@ -569,7 +598,7 @@ pub(crate) fn has_active_or_pending(cx: &App) -> bool {
 }
 
 pub(crate) fn pooled_count(cx: &App) -> usize {
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     {
         let windows = cx.windows();
         cx.try_global::<OverlaySession>().map_or(0, |session| {
@@ -580,15 +609,19 @@ pub(crate) fn pooled_count(cx: &App) -> usize {
                 .count()
         })
     }
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = cx;
         0
     }
 }
 
+#[cfg_attr(
+    not(any(all(target_os = "macos", not(test)), all(windows, test))),
+    allow(dead_code)
+)]
 pub(crate) fn evict_pooled(cx: &mut App) {
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     {
         if cx.try_global::<OverlaySession>().is_none() {
             return;
@@ -600,31 +633,64 @@ pub(crate) fn evict_pooled(cx: &mut App) {
                 .update(cx, |_, window, _| window.remove_window());
         }
     }
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = cx;
     }
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 pub fn raise_all(generation: u64, cx: &mut App) {
     let handles = session(cx).handles.clone();
     for tracked in handles {
         if tracked.generation != generation {
             continue;
         }
-        if let Some(handle) = tracked.handle.downcast::<AreaOverlay>() {
-            let _ = handle.update(cx, |overlay, window, cx| {
-                overlay.raise_for_session(window, tracked.focus, cx);
-            });
-            continue;
-        }
-        let _ = tracked.handle.update(cx, |_, window, _| {
-            set_overlay_topmost(window);
-            if tracked.focus {
-                window.activate_window();
+        #[cfg(windows)]
+        {
+            if let Some(handle) = tracked.handle.downcast::<AreaOverlay>() {
+                let _ = handle.update(cx, |overlay, window, cx| {
+                    overlay.raise_for_session(window, tracked.focus, cx);
+                });
+                continue;
             }
-        });
+            let _ = tracked.handle.update(cx, |_, window, _| {
+                set_overlay_topmost(window);
+                if tracked.focus {
+                    window.activate_window();
+                }
+            });
+        }
+        #[cfg(target_os = "macos")]
+        {
+            if let Some(handle) = tracked.handle.downcast::<AreaOverlay>() {
+                let _ = handle.update(cx, |overlay, window, cx| {
+                    if overlay.parked {
+                        return;
+                    }
+                    crate::system::window_visibility::show_overlay(window, tracked.focus);
+                    let position = window.mouse_position();
+                    overlay.pointer_inside =
+                        Bounds::new(gpui::point(px(0.), px(0.)), window.viewport_size())
+                            .contains(&position);
+                    if overlay.pointer_inside {
+                        overlay.pointer = Some(position);
+                        overlay.hovered_window = overlay.window_at(position);
+                    }
+                    if tracked.focus {
+                        window.activate_window();
+                    }
+                    cx.notify();
+                });
+                continue;
+            }
+            let _ = tracked.handle.update(cx, |_, window, _| {
+                crate::system::window_visibility::show_overlay(window, tracked.focus);
+                if tracked.focus {
+                    window.activate_window();
+                }
+            });
+        }
     }
 }
 
@@ -655,8 +721,24 @@ pub(crate) fn dismiss(window: &mut Window, cx: &mut App) {
 }
 
 fn conceal_for_capture(window: &mut Window, cx: &mut App) -> Option<u64> {
+    #[cfg(target_os = "macos")]
+    {
+        crate::system::window_visibility::hide(window);
+        let current = window.window_handle();
+        let others: Vec<_> = session(cx)
+            .handles
+            .iter()
+            .map(|tracked| tracked.handle)
+            .filter(|handle| *handle != current)
+            .collect();
+        for handle in others {
+            let _ = handle.update(cx, |_, window, _| {
+                crate::system::window_visibility::hide(window);
+            });
+        }
+    }
     let generation = remove_all(cx, true);
-    if !cfg!(windows) || generation.is_none() {
+    if !cfg!(any(windows, target_os = "macos")) || generation.is_none() {
         window.remove_window();
     }
     generation
@@ -669,7 +751,9 @@ fn conceal_for_scroll(window: &mut Window, owner: u64, cx: &mut App) -> Option<u
     if !handles.iter().any(|tracked| tracked.handle == current) {
         handles.push(TrackedOverlay {
             handle: current,
+            display_id: window.display(cx).map(|display| display.id()),
             generation: 0,
+            focus: false,
         });
     }
     crate::system::window_visibility::hide(window);
@@ -688,7 +772,12 @@ fn conceal_for_scroll(window: &mut Window, owner: u64, cx: &mut App) -> Option<u
 pub(crate) fn release_scroll_selectors(owner: Option<u64>, cx: &mut App) {
     #[cfg(target_os = "macos")]
     if let Some(handles) = owner.and_then(|owner| session(cx).scroll_selectors.remove(&owner)) {
-        dispose_overlays(handles, cx);
+        for tracked in handles {
+            let _ = tracked.handle.update(cx, |_, window, _| {
+                crate::system::window_visibility::hide(window);
+                window.remove_window();
+            });
+        }
     }
     #[cfg(not(target_os = "macos"))]
     let _ = (owner, cx);
@@ -996,6 +1085,7 @@ fn overlay_options(
     display_bounds: Bounds<Pixels>,
     display_id: DisplayId,
     focus: bool,
+    show: bool,
 ) -> WindowOptions {
     #[cfg(target_os = "macos")]
     let window_bounds = Bounds {
@@ -1008,8 +1098,8 @@ fn overlay_options(
     let mut options = crate::windows::popup_window_options(
         window_bounds,
         crate::windows::PopupWindowConfig {
-            focus,
-            show: !cfg!(windows),
+            focus: focus && show,
+            show: !cfg!(windows) && show,
             display_id: Some(display_id),
             ..Default::default()
         },
@@ -1165,6 +1255,37 @@ fn park_overlay(window: &Window) {
 #[cfg(all(windows, test))]
 fn park_overlay(_window: &Window) {}
 
+#[cfg(all(windows, not(test)))]
+fn hide_overlay_without_shrinking(window: &Window) {
+    use windows::Win32::Graphics::Gdi::SetWindowRgn;
+    use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE};
+
+    if let Some(hwnd) = crate::windows::window_hwnd(window) {
+        unsafe {
+            let _ = ShowWindow(hwnd, SW_HIDE);
+            let _ = SetWindowRgn(hwnd, None, false);
+        }
+        crate::system::window_composition::set_cloaked(hwnd, false);
+    }
+}
+
+#[cfg(all(windows, test))]
+fn hide_overlay_without_shrinking(_window: &Window) {}
+
+#[cfg(target_os = "macos")]
+fn park_macos_overlay(window: &mut Window, origin: Point<Pixels>, cx: &mut App) {
+    crate::system::window_visibility::hide(window);
+    #[cfg(not(test))]
+    {
+        let parked_bounds = Bounds::new(origin, gpui::size(px(1.0), px(1.0)));
+        if crate::windows::set_macos_window_bounds_with_display(window, parked_bounds, false) {
+            window.bounds_changed(cx);
+        }
+    }
+    #[cfg(test)]
+    let _ = (origin, cx);
+}
+
 fn set_overlay_topmost(window: &Window) {
     #[cfg(windows)]
     {
@@ -1210,19 +1331,19 @@ fn track_overlay(
     focus: bool,
     cx: &mut App,
 ) {
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     let _ = (display_id, focus);
     session(cx).handles.push(TrackedOverlay {
         handle,
-        #[cfg(windows)]
-        display_id,
+        #[cfg(any(windows, target_os = "macos"))]
+        display_id: Some(display_id),
         generation,
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         focus,
     });
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 fn take_pooled_overlay(
     display_id: DisplayId,
     cx: &mut App,
@@ -1286,34 +1407,68 @@ fn open_overlay_window(
     error: &'static str,
     cx: &mut App,
 ) -> Option<gpui::WindowHandle<AreaOverlay>> {
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     if active {
         if let Some(handle) = take_pooled_overlay(display_id, cx) {
             let updated = handle.update(cx, |overlay, window, cx| {
-                if launch.deferred_show {
-                    park_overlay(window);
+                #[cfg(windows)]
+                {
+                    if launch.deferred_show {
+                        hide_overlay_without_shrinking(window);
+                    }
+                    prepare_overlay_window(window, display_bounds);
+                    if !launch.deferred_show {
+                        set_overlay_hole(window, None);
+                    }
                 }
-                prepare_overlay_window(window, display_bounds);
-                if !launch.deferred_show {
-                    set_overlay_hole(window, None);
+                #[cfg(target_os = "macos")]
+                {
+                    prepare_overlay_window(window, display_bounds);
+                    #[cfg(not(test))]
+                    if crate::windows::set_macos_window_bounds(window, display_bounds) {
+                        window.bounds_changed(cx);
+                    }
                 }
                 let scale = window.scale_factor();
                 let focus_handle = overlay.focus_handle.clone();
                 let window_list_generation = overlay.window_list_generation.wrapping_add(1);
                 let color_frame_generation = overlay.color_frame_generation.wrapping_add(1);
                 let park_generation = overlay.park_generation.wrapping_add(1);
+                #[cfg(windows)]
                 let surface_state = overlay.surface_state;
                 let mut replacement = build(scale, focus_handle);
                 replacement.display_id = Some(u64::from(display_id) as u32);
                 replacement.window_list_generation = window_list_generation;
                 replacement.color_frame_generation = color_frame_generation;
                 replacement.park_generation = park_generation;
-                replacement.surface_state = surface_state;
+                #[cfg(windows)]
+                {
+                    replacement.surface_state = surface_state;
+                }
                 *overlay = replacement;
+                #[cfg(all(target_os = "macos", not(test)))]
+                {
+                    let position = window.mouse_position();
+                    overlay.pointer_inside =
+                        Bounds::new(gpui::point(px(0.), px(0.)), window.viewport_size())
+                            .contains(&position);
+                    if overlay.pointer_inside {
+                        overlay.pointer = Some(position);
+                        overlay.hovered_window = overlay.window_at(position);
+                    }
+                }
                 after_new(overlay, cx);
                 cx.notify();
                 window.refresh();
+                #[cfg(windows)]
                 overlay.reveal_for_session(window, launch, cx);
+                #[cfg(target_os = "macos")]
+                if !launch.deferred_show {
+                    crate::system::window_visibility::show_overlay(window, launch.focus);
+                    if launch.focus {
+                        window.activate_window();
+                    }
+                }
                 window.focus(&overlay.focus_handle, cx);
             });
             if let Err(failure) = updated {
@@ -1331,15 +1486,22 @@ fn open_overlay_window(
         }
     }
 
-    let make_options = || overlay_options(display_bounds, display_id, launch.focus);
+    let initial_bounds = if active {
+        display_bounds
+    } else {
+        Bounds::new(display_bounds.origin, gpui::size(px(1.0), px(1.0)))
+    };
+    let show_immediately = active && !launch.deferred_show;
+    let make_options =
+        || overlay_options(initial_bounds, display_id, launch.focus, show_immediately);
     let build_overlay = |window: &mut Window, cx: &mut App| {
-        prepare_overlay_window(window, display_bounds);
+        prepare_overlay_window(window, initial_bounds);
         let scale = window.scale_factor();
         let focus_handle = cx.focus_handle();
         let view = cx.new(|_| {
             let mut view = build(scale, focus_handle);
             view.display_id = Some(u64::from(display_id) as u32);
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "macos"))]
             {
                 view.parked = !active;
             }
@@ -1414,23 +1576,25 @@ fn open_overlay_window(
             let positioned = handle
                 .update(cx, |overlay, window, cx| {
                     crate::windows::remove_popup_frame(window);
-                    if crate::windows::set_macos_window_bounds(window, display_bounds) {
+                    if crate::windows::set_macos_window_bounds(window, initial_bounds) {
                         window.bounds_changed(cx);
-                        let position = window.mouse_position();
-                        overlay.pointer_inside =
-                            Bounds::new(gpui::point(px(0.), px(0.)), window.viewport_size())
-                                .contains(&position);
-                        if overlay.pointer_inside {
-                            overlay.pointer = Some(position);
-                            overlay.hovered_window = overlay.window_at(position);
+                        if active {
+                            let position = window.mouse_position();
+                            overlay.pointer_inside =
+                                Bounds::new(gpui::point(px(0.), px(0.)), window.viewport_size())
+                                    .contains(&position);
+                            if overlay.pointer_inside {
+                                overlay.pointer = Some(position);
+                                overlay.hovered_window = overlay.window_at(position);
+                            }
+                            cx.notify();
                         }
-                        cx.notify();
                         return true;
                     }
                     #[cfg(feature = "parity")]
                     if std::env::var_os(crate::ui::parity::daemon_fixture::PROCESS_ENV).is_some() {
                         let scale = window.scale_factor();
-                        window.resize(display_bounds.size);
+                        window.resize(initial_bounds.size);
                         window.bounds_changed(cx);
                         window.set_scale_factor(scale);
                         return true;
@@ -1462,11 +1626,23 @@ fn open_overlay_window(
     }
 }
 
-#[cfg(all(windows, test))]
+#[cfg(any(windows, target_os = "macos"))]
 pub fn prewarm(cx: &mut App) {
-    let service = crate::state::state(cx);
+    if has_active_or_pending(cx) {
+        return;
+    }
+    let Some(service) = crate::state::try_state(cx) else {
+        return;
+    };
     for display in cx.displays() {
         let display_id = display.id();
+        if session(cx)
+            .pooled
+            .iter()
+            .any(|entry| entry.display_id == display_id)
+        {
+            continue;
+        }
         let display_bounds = crate::system::work_area::display_bounds(display.as_ref());
         let Some(handle) = open_overlay_window(
             display_id,
@@ -1667,9 +1843,9 @@ pub struct AreaOverlay {
     menu_trigger_focus: Option<gpui::FocusHandle>,
     menu_activation_key: Option<&'static str>,
     menu_return_focus: bool,
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     parked: bool,
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     park_generation: u64,
     #[cfg(windows)]
     surface_state: PooledSurfaceState,
@@ -1712,9 +1888,9 @@ impl AreaOverlay {
             menu_trigger_focus: None,
             menu_activation_key: None,
             menu_return_focus: false,
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "macos"))]
             parked: false,
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "macos"))]
             park_generation: 0,
             #[cfg(windows)]
             surface_state: PooledSurfaceState::Clean,
@@ -1722,7 +1898,7 @@ impl AreaOverlay {
         }
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     fn reset_for_park(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.window_list_generation = self.window_list_generation.wrapping_add(1);
         self.picking_windows = false;
@@ -1741,6 +1917,10 @@ impl AreaOverlay {
         self.handed_off = false;
         self.interaction = None;
         self.pointer = None;
+        #[cfg(target_os = "macos")]
+        {
+            self.pointer_inside = false;
+        }
         self.cursor = gpui::CursorStyle::Crosshair;
         self.parked = true;
         self.park_generation = self.park_generation.wrapping_add(1);
@@ -3017,14 +3197,13 @@ fn conceal_recording_selector(window: &mut Window) {
 
 impl Render for AreaOverlay {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(any(windows, target_os = "macos"))]
+        if self.parked {
+            return div().size_full().into_any_element();
+        }
         #[cfg(windows)]
-        {
-            if self.parked {
-                return div().size_full().into_any_element();
-            }
-            if self.surface_state == PooledSurfaceState::Clean {
-                self.surface_state = PooledSurfaceState::Live;
-            }
+        if self.surface_state == PooledSurfaceState::Clean {
+            self.surface_state = PooledSurfaceState::Live;
         }
         #[cfg(target_os = "macos")]
         let window_hovered = self.pointer_inside;

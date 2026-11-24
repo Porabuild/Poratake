@@ -211,7 +211,7 @@ impl MetalRenderer {
         // Support direct-to-display rendering if the window is not transparent
         // https://developer.apple.com/documentation/metal/managing-your-game-window-for-metal-in-macos
         layer.setOpaque(!transparent);
-        layer.setMaximumDrawableCount(3);
+        layer.setMaximumDrawableCount(2);
         // Allow texture reading for visual tests and UI automation screenshots
         // (captures without ScreenCaptureKit). Only debug builds pay the
         // presentation cost, even when `test-support` is compiled in.
@@ -505,12 +505,43 @@ impl MetalRenderer {
         }
     }
 
+    /// Replaces the backing `CAMetalLayer` with a fresh layer sized to `size`
+    /// so CoreAnimation immediately releases large cached `IOSurface` drawables
+    /// when a hidden window is parked at 1x1.
+    pub fn recreate_layer(&mut self, size: Size<DevicePixels>) -> Option<*mut CAMetalLayer> {
+        let old_layer = self.layer.take()?;
+        let new_layer = CAMetalLayer::new();
+        Self::configure_layer(&new_layer, &self.device, !self.opaque, false);
+        if let Some(colorspace) = old_layer.colorspace() {
+            new_layer.setColorspace(Some(&colorspace));
+        }
+        new_layer.setContentsScale(old_layer.contentsScale());
+        new_layer.setPresentsWithTransaction(self.presents_with_transaction);
+        new_layer.setFrame(old_layer.frame());
+        new_layer.setDrawableSize(CGSize::new(size.width.0 as f64, size.height.0 as f64));
+        old_layer.setDelegate(None);
+        self.path_intermediate_texture = None;
+        self.path_intermediate_msaa_texture = None;
+        let ptr = Retained::as_ptr(&new_layer).cast_mut();
+        self.layer = Some(new_layer);
+        drop(old_layer);
+        Some(ptr)
+    }
+
     pub fn update_drawable_size(&mut self, size: Size<DevicePixels>) {
         if let Some(layer) = &self.layer {
             layer.setDrawableSize(CGSize::new(size.width.0 as f64, size.height.0 as f64));
         }
-        if let Err(error) = self.update_path_intermediate_textures(size) {
-            log::error!("failed to resize path textures: {error:#}");
+        if self
+            .path_intermediate_texture
+            .as_ref()
+            .is_some_and(|texture| {
+                texture.width() != size.width.0.max(0) as usize
+                    || texture.height() != size.height.0.max(0) as usize
+            })
+        {
+            self.path_intermediate_texture = None;
+            self.path_intermediate_msaa_texture = None;
         }
     }
 
@@ -652,7 +683,10 @@ impl MetalRenderer {
         texture: &ProtocolObject<dyn MTLTexture>,
         viewport_size: Size<DevicePixels>,
     ) -> Result<Retained<ProtocolObject<dyn MTLCommandBuffer>>> {
-        if self.path_intermediate_texture.is_none() {
+        if scene.paths.is_empty() {
+            self.path_intermediate_texture = None;
+            self.path_intermediate_msaa_texture = None;
+        } else {
             self.update_path_intermediate_textures(viewport_size)?;
         }
         let mut writer = InstanceBufferWriter::new(
@@ -737,10 +771,7 @@ impl MetalRenderer {
 
         // Headless callers do not have a Cocoa event-loop pool to release
         // autoreleased command buffers and render-pass descriptors.
-        objc2::rc::autoreleasepool(|_| {
-            self.update_path_intermediate_textures(size)?;
-            self.render_offscreen(scene, size)
-        })
+        objc2::rc::autoreleasepool(|_| self.render_offscreen(scene, size))
     }
 
     /// Renders a scene into a new offscreen texture of `size` and reads it
@@ -805,8 +836,6 @@ impl MetalRenderer {
         }
 
         objc2::rc::autoreleasepool(|_| {
-            self.update_path_intermediate_textures(size)?;
-
             let needs_new_target = self.headless_render_target.as_ref().is_none_or(|texture| {
                 texture.width() != size.width.0 as usize
                     || texture.height() != size.height.0 as usize
@@ -1980,6 +2009,51 @@ mod tests {
             renderer.update_path_intermediate_textures(initial_size)?;
             assert!(renderer.path_intermediate_texture.is_some());
         }
+        Ok(())
+    }
+
+    #[test]
+    fn path_intermediate_textures_are_allocated_lazily() -> Result<()> {
+        let mut renderer = MetalRenderer::new_headless(Default::default())?;
+        let initial_size = size(DevicePixels(64), DevicePixels(64));
+        assert!(renderer.path_intermediate_texture.is_none());
+
+        renderer.update_drawable_size(initial_size);
+        assert!(renderer.path_intermediate_texture.is_none());
+
+        let _ = renderer.render_scene_to_image(&Scene::default(), initial_size)?;
+        assert!(renderer.path_intermediate_texture.is_none());
+
+        renderer.update_path_intermediate_textures(initial_size)?;
+        assert!(renderer.path_intermediate_texture.is_some());
+
+        let _ = renderer.render_scene_to_image(&Scene::default(), initial_size)?;
+        assert!(renderer.path_intermediate_texture.is_none());
+        assert!(renderer.path_intermediate_msaa_texture.is_none());
+
+        renderer.update_path_intermediate_textures(initial_size)?;
+        renderer.update_drawable_size(size(DevicePixels(128), DevicePixels(64)));
+        assert!(renderer.path_intermediate_texture.is_none());
+        assert!(renderer.path_intermediate_msaa_texture.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn recreate_layer_replaces_layer_and_clears_path_textures() -> Result<()> {
+        let mut renderer = MetalRenderer::new(Default::default(), true, false)?;
+        let initial_size = size(DevicePixels(64), DevicePixels(64));
+        renderer.update_path_intermediate_textures(initial_size)?;
+        let old_ptr = renderer.layer_ptr();
+        assert!(!old_ptr.is_null());
+
+        let new_ptr = renderer
+            .recreate_layer(size(DevicePixels(2), DevicePixels(2)))
+            .context("recreate_layer should return a new layer")?;
+        assert!(!new_ptr.is_null());
+        assert_ne!(old_ptr, new_ptr);
+        assert_eq!(renderer.layer_ptr(), new_ptr);
+        assert!(renderer.path_intermediate_texture.is_none());
+        assert!(renderer.path_intermediate_msaa_texture.is_none());
         Ok(())
     }
 

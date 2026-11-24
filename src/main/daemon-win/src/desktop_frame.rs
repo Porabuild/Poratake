@@ -53,7 +53,7 @@ use windows::core::{IInspectable, Interface, PCWSTR, factory};
 const FRAME_POOL_SIZE: i32 = 1;
 const FRAME_TIMEOUT: Duration = Duration::from_secs(3);
 const CAPTURE_TIMEOUT: Duration = Duration::from_secs(10);
-const IDLE_CAPTURE_RELEASE_DELAY: Duration = Duration::from_secs(2);
+const IDLE_CAPTURE_TRIM_DELAY: Duration = Duration::from_secs(2);
 const BYTES_PER_PIXEL: usize = 4;
 const HDR_BYTES_PER_PIXEL: usize = 8;
 const BMP_HEADER_SIZE: usize = 54;
@@ -167,7 +167,19 @@ pub fn reclaim_idle_memory() {
 pub fn prewarm_capture() {
     let _ = std::thread::Builder::new().spawn(|| {
         ensure_multithreaded_apartment();
-        let _ = capture_interop();
+        if capture_interop().is_err() {
+            return;
+        }
+        let targets = monitors();
+        prune_capture_devices(&targets);
+        for monitor in &targets {
+            if let Some(device) = cached_capture_device(monitor.handle)
+                && let Ok(mut device) = device.lock()
+            {
+                device.trim();
+            }
+        }
+        reclaim_idle_memory();
     });
 }
 
@@ -800,13 +812,13 @@ fn release_cached_staging_textures() {
     }
 }
 
-fn release_cached_capture_resources() {
-    let drained: Vec<Arc<Mutex<CaptureDevice>>> = capture_devices()
+fn trim_cached_capture_resources() {
+    let devices: Vec<Arc<Mutex<CaptureDevice>>> = capture_devices()
         .lock()
-        .map(|mut devices| devices.drain().map(|(_, device)| device).collect())
+        .map(|devices| devices.values().cloned().collect())
         .unwrap_or_default();
-    for device in drained {
-        if let Ok(mut device) = device.lock() {
+    for device in devices {
+        if let Ok(mut device) = device.try_lock() {
             device.trim();
         }
     }
@@ -835,7 +847,7 @@ fn idle_cleanup() -> &'static IdleCleanup {
 }
 
 fn schedule_idle_cleanup() {
-    schedule_idle_cleanup_after(IDLE_CAPTURE_RELEASE_DELAY);
+    schedule_idle_cleanup_after(IDLE_CAPTURE_TRIM_DELAY);
 }
 
 fn schedule_idle_cleanup_after(delay: Duration) {
@@ -894,7 +906,7 @@ fn run_idle_cleanup_worker(cleanup: &IdleCleanup) {
             return;
         }
         drop(state);
-        release_cached_capture_resources();
+        trim_cached_capture_resources();
         state = cleanup
             .state
             .lock()
@@ -1204,7 +1216,10 @@ fn capture_item(
     let _ = pool.RemoveFrameArrived(token);
     drop(receiver);
     let _ = pool.Close();
-    device.trim();
+    // Release the staging texture immediately so peak VRAM/RAM stays bounded,
+    // while deferring ClearState/Flush/DXGI Trim to the idle reaper off the
+    // capture critical path.
+    device.staging = None;
 
     let (width, height, pixels) = captured?;
     Ok(DesktopFrame {

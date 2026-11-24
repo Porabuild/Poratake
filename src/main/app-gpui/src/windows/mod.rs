@@ -239,6 +239,15 @@ pub(crate) fn set_macos_window_aspect_ratio(window: &gpui::Window, width: f32, h
 
 #[cfg(all(target_os = "macos", not(test)))]
 pub(crate) fn set_macos_window_bounds(window: &gpui::Window, bounds: Bounds<Pixels>) -> bool {
+    set_macos_window_bounds_with_display(window, bounds, true)
+}
+
+#[cfg(all(target_os = "macos", not(test)))]
+pub(crate) fn set_macos_window_bounds_with_display(
+    window: &gpui::Window,
+    bounds: Bounds<Pixels>,
+    display: bool,
+) -> bool {
     use cocoa::foundation::{NSPoint, NSRect, NSSize};
     use objc::{msg_send, sel, sel_impl};
 
@@ -256,7 +265,7 @@ pub(crate) fn set_macos_window_bounds(window: &gpui::Window, bounds: Bounds<Pixe
                 f64::from(f32::from(bounds.size.height)),
             ),
         );
-        let _: () = msg_send![native_window, setFrame: frame display: true];
+        let _: () = msg_send![native_window, setFrame: frame display: display];
         true
     }
 }
