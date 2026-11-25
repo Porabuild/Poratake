@@ -199,7 +199,7 @@ impl HistoryWindow {
                             crate::ui::chrome::HISTORY_RADIUS,
                         );
                         window.on_next_frame(move |window, _| {
-                            crate::system::window_surface::reveal(window, true, 0);
+                            crate::system::window_surface::reveal(window, true);
                             window.activate_window();
                             window.on_next_frame(move |window, cx| {
                                 settled.update(cx, |this, _cx| this.revealing = false);
