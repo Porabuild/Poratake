@@ -8,7 +8,12 @@ use windows::{
         ViewManagement::{UIColorType, UISettings},
     },
     Win32::{
-        Foundation::*, Graphics::Dwm::*, System::LibraryLoader::LoadLibraryA,
+        Foundation::*,
+        Graphics::Dwm::*,
+        System::{
+            Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize},
+            LibraryLoader::LoadLibraryA,
+        },
         UI::WindowsAndMessaging::*,
     },
     core::{BOOL, PCSTR},
@@ -16,6 +21,21 @@ use windows::{
 
 use crate::*;
 use gpui::*;
+
+pub(crate) struct ComApartment;
+
+impl ComApartment {
+    pub(crate) fn new() -> anyhow::Result<Self> {
+        unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }.ok()?;
+        Ok(Self)
+    }
+}
+
+impl Drop for ComApartment {
+    fn drop(&mut self) {
+        unsafe { CoUninitialize() };
+    }
+}
 
 pub(crate) trait HiLoWord {
     fn hiword(&self) -> u16;

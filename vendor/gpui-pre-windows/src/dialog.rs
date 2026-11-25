@@ -18,7 +18,7 @@ use gpui_util::ResultExt;
 use windows::{
     Win32::{
         Foundation::*,
-        System::{Com::*, Threading::GetCurrentThreadId},
+        System::Threading::GetCurrentThreadId,
         UI::{
             Controls::{TASKDIALOG_NOTIFICATIONS, TDN_BUTTON_CLICKED},
             WindowsAndMessaging::*,
@@ -27,7 +27,7 @@ use windows::{
     core::{BOOL, HRESULT, w},
 };
 
-use crate::SafeHwnd;
+use crate::{ComApartment, SafeHwnd};
 
 pub(crate) struct DialogOwner {
     hwnd: HWND,
@@ -116,7 +116,7 @@ pub(crate) fn show_dialog<T: Send + 'static>(
                     let cancellation = cancellation.clone();
                     move || {
                         let result = (|| {
-                            let _apartment = Apartment::new()?;
+                            let _apartment = ComApartment::new()?;
                             let _timer = CancellationTimer::new(cancellation.clone())?;
                             if cancellation.is_requested() {
                                 return Err(anyhow!("dialog cancelled"));
@@ -151,21 +151,6 @@ pub(crate) fn show_dialog<T: Send + 'static>(
         })
         .detach();
     receiver
-}
-
-struct Apartment;
-
-impl Apartment {
-    fn new() -> Result<Self> {
-        unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok()? };
-        Ok(Self)
-    }
-}
-
-impl Drop for Apartment {
-    fn drop(&mut self) {
-        unsafe { CoUninitialize() };
-    }
 }
 
 thread_local! {

@@ -14,7 +14,6 @@ use herogpui::gpui;
 
 use crate::config::store::ConfigStore;
 use crate::history_store::{self, HistoryItem, HistoryItemType};
-use crate::system::desktop;
 use crate::system::native::TrayRect;
 use crate::theme::vars::active_theme;
 use crate::video::project::{recording_features, RecordingFeatures};
@@ -430,7 +429,7 @@ impl HistoryWindow {
         let Some(item) = self.visible().get(index).map(|item| (*item).clone()) else {
             return;
         };
-        desktop::reveal_in_file_manager(std::path::Path::new(&item.original_path));
+        cx.reveal_path(std::path::Path::new(&item.original_path));
         cx.notify();
     }
 
@@ -904,6 +903,35 @@ mod tests {
         assert!(!should_close_on_blur(true, false));
         assert!(!should_close_on_blur(false, true));
         assert!(!should_close_on_blur(true, true));
+    }
+
+    #[herogpui::test]
+    fn history_reveal_uses_the_platform_file_manager(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(ConfigStore::load_at(directory.path().join("config.json")).unwrap());
+        let path = directory.path().join("capture with spaces.png");
+        cx.update(|cx| crate::state::set_test_state(cx, store.clone()));
+        let history = cx.add_window(|window, cx| {
+            let mut history = HistoryWindow::new(store, window, cx);
+            history.loading = false;
+            history.items = vec![HistoryItem {
+                id: "capture".into(),
+                timestamp: 1,
+                original_path: path.to_string_lossy().into_owned(),
+                r#type: HistoryItemType::Screenshot,
+                editor_state: None,
+                duration: None,
+            }];
+            history.filter = HistoryFilter::All;
+            history.sort_order = HistorySortOrder::Newest;
+            history
+        });
+
+        history
+            .update(cx, |history, _, cx| history.reveal_index(0, cx))
+            .unwrap();
+
+        assert_eq!(cx.revealed_paths(), vec![path]);
     }
 
     #[test]
