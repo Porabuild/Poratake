@@ -83,6 +83,7 @@ impl MenuView {
         self
     }
 
+    #[cfg(any(target_os = "macos", test))]
     pub fn exit_handle(&self) -> Rc<Cell<bool>> {
         self.exiting.clone()
     }
