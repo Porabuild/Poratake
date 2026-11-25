@@ -1,9 +1,8 @@
-use std::{borrow::Cow, sync::LazyLock};
+use std::{borrow::Cow, sync::LazyLock, time::Duration};
 
 use anyhow::Result;
 use collections::FxHashMap;
 use itertools::Itertools;
-use windows::core::{Owned, PCWSTR};
 use windows::Win32::{
     Foundation::{HANDLE, HGLOBAL},
     System::{
@@ -12,14 +11,15 @@ use windows::Win32::{
             GetClipboardData, GetClipboardFormatNameW, OpenClipboard, RegisterClipboardFormatW,
             SetClipboardData,
         },
-        Memory::{GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE},
-        Ole::{CF_DIB, CF_HDROP, CF_UNICODETEXT},
+        Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock},
+        Ole::{CF_DIB, CF_DIBV5, CF_HDROP, CF_UNICODETEXT},
     },
     UI::Shell::{DragQueryFileW, HDROP},
 };
+use windows::core::{Owned, PCWSTR};
 
 use gpui::{
-    hash, ClipboardEntry, ClipboardItem, ClipboardString, ExternalPaths, Image, ImageFormat,
+    ClipboardEntry, ClipboardItem, ClipboardString, ExternalPaths, Image, ImageFormat, hash,
 };
 
 const DRAGDROP_GET_FILES_COUNT: u32 = 0xFFFFFFFF;
@@ -173,8 +173,12 @@ fn get_clipboard_string(format: u32) -> Option<String> {
     Some(String::from_utf16_lossy(&slice[..actual_len]))
 }
 
+fn is_dib_format(format: u32) -> bool {
+    format == CF_DIB.0 as u32 || format == CF_DIBV5.0 as u32
+}
+
 fn is_image_format(format: u32) -> bool {
-    IMAGE_FORMATS_MAP.contains_key(&format) || format == CF_DIB.0 as u32
+    IMAGE_FORMATS_MAP.contains_key(&format) || is_dib_format(format)
 }
 
 fn write_string(item: &ClipboardString) -> Result<()> {
@@ -235,31 +239,35 @@ fn convert_to_png(bytes: &[u8], format: ImageFormat) -> Option<Vec<u8>> {
     Some(buf)
 }
 
-const DIB_V4_HEADER_SIZE: usize = 108;
+const DIB_V5_HEADER_SIZE: usize = 124;
+const BI_BITFIELDS: u32 = 3;
+const LCS_SRGB: u32 = 0x7352_4742;
+const LCS_GM_IMAGES: u32 = 4;
 
-fn write_dib_v4(rgba: &image::RgbaImage, dst: &mut [u8]) {
+fn write_dib_v5(rgba: &image::RgbaImage, dst: &mut [u8]) {
     let width = rgba.width();
     let height = rgba.height();
     let row_bytes = width as usize * 4;
     let pixel_bytes = row_bytes * height as usize;
 
-    let header = &mut dst[..DIB_V4_HEADER_SIZE];
+    let header = &mut dst[..DIB_V5_HEADER_SIZE];
     header.fill(0);
-    header[0..4].copy_from_slice(&(DIB_V4_HEADER_SIZE as u32).to_le_bytes());
+    header[0..4].copy_from_slice(&(DIB_V5_HEADER_SIZE as u32).to_le_bytes());
     header[4..8].copy_from_slice(&(width as i32).to_le_bytes());
     header[8..12].copy_from_slice(&(height as i32).to_le_bytes());
     header[12..14].copy_from_slice(&1u16.to_le_bytes());
     header[14..16].copy_from_slice(&32u16.to_le_bytes());
-    header[16..20].copy_from_slice(&3u32.to_le_bytes());
+    header[16..20].copy_from_slice(&BI_BITFIELDS.to_le_bytes());
     header[20..24].copy_from_slice(&(pixel_bytes as u32).to_le_bytes());
     header[40..44].copy_from_slice(&0x00ff_0000u32.to_le_bytes());
     header[44..48].copy_from_slice(&0x0000_ff00u32.to_le_bytes());
     header[48..52].copy_from_slice(&0x0000_00ffu32.to_le_bytes());
     header[52..56].copy_from_slice(&0xff00_0000u32.to_le_bytes());
-    header[56..60].copy_from_slice(&0x7352_4742u32.to_le_bytes());
+    header[56..60].copy_from_slice(&LCS_SRGB.to_le_bytes());
+    header[108..112].copy_from_slice(&LCS_GM_IMAGES.to_le_bytes());
 
     let raw = rgba.as_raw();
-    let dst_pixels = &mut dst[DIB_V4_HEADER_SIZE..DIB_V4_HEADER_SIZE + pixel_bytes];
+    let dst_pixels = &mut dst[DIB_V5_HEADER_SIZE..DIB_V5_HEADER_SIZE + pixel_bytes];
     for y in 0..height as usize {
         let src_row = &raw[(height as usize - 1 - y) * row_bytes..][..row_bytes];
         let dst_row = &mut dst_pixels[y * row_bytes..][..row_bytes];
@@ -272,7 +280,7 @@ fn write_dib_v4(rgba: &image::RgbaImage, dst: &mut [u8]) {
     }
 }
 
-fn dib_v4_total_bytes(rgba: &image::RgbaImage) -> Option<usize> {
+fn dib_v5_total_bytes(rgba: &image::RgbaImage) -> Option<usize> {
     let width = rgba.width();
     let height = rgba.height();
     let _ = (i32::try_from(width).ok()?, i32::try_from(height).ok()?);
@@ -280,7 +288,7 @@ fn dib_v4_total_bytes(rgba: &image::RgbaImage) -> Option<usize> {
         .checked_mul(height as usize)?
         .checked_mul(4)?;
     let _ = u32::try_from(pixel_bytes).ok()?;
-    DIB_V4_HEADER_SIZE.checked_add(pixel_bytes)
+    DIB_V5_HEADER_SIZE.checked_add(pixel_bytes)
 }
 
 #[cfg(test)]
@@ -290,9 +298,9 @@ fn convert_to_dib(bytes: &[u8], format: ImageFormat) -> Option<Vec<u8>> {
         .map_err(|e| log::warn!("Failed to decode image for bitmap conversion: {e}"))
         .ok()?
         .into_rgba8();
-    let total_bytes = dib_v4_total_bytes(&rgba)?;
+    let total_bytes = dib_v5_total_bytes(&rgba)?;
     let mut dib = vec![0u8; total_bytes];
-    write_dib_v4(&rgba, &mut dib);
+    write_dib_v5(&rgba, &mut dib);
     Some(dib)
 }
 
@@ -306,7 +314,7 @@ fn write_dib_to_clipboard(bytes: &[u8], format: ImageFormat) {
         return;
     };
     let rgba = image.into_rgba8();
-    let Some(total_bytes) = dib_v4_total_bytes(&rgba) else {
+    let Some(total_bytes) = dib_v5_total_bytes(&rgba) else {
         return;
     };
 
@@ -315,9 +323,9 @@ fn write_dib_to_clipboard(bytes: &[u8], format: ImageFormat) {
         let ptr = GlobalLock(*global) as *mut u8;
         anyhow::ensure!(!ptr.is_null(), "GlobalLock returned null");
         let dst = std::slice::from_raw_parts_mut(ptr, total_bytes);
-        write_dib_v4(&rgba, dst);
+        write_dib_v5(&rgba, dst);
         GlobalUnlock(*global).ok();
-        SetClipboardData(CF_DIB.0 as u32, Some(HANDLE(global.0)))?;
+        SetClipboardData(CF_DIBV5.0 as u32, Some(HANDLE(global.0)))?;
         std::mem::forget(global);
         Ok(())
     })();
@@ -344,7 +352,7 @@ fn read_clipboard_metadata(text: &str) -> Option<String> {
 
 fn read_image(format: u32) -> Option<ClipboardEntry> {
     let locked = get_clipboard_data(format)?;
-    let (bytes, image_format) = if format == CF_DIB.0 as u32 {
+    let (bytes, image_format) = if is_dib_format(format) {
         (convert_dib_to_bmp(locked.as_bytes())?, ImageFormat::Bmp)
     } else {
         let image_format = *IMAGE_FORMATS_MAP.get(&format)?;
@@ -444,13 +452,14 @@ struct ClipboardGuard;
 
 impl ClipboardGuard {
     fn open() -> Option<Self> {
-        match unsafe { OpenClipboard(None) } {
-            Ok(()) => Some(Self),
-            Err(e) => {
-                log::error!("Failed to open clipboard: {e}");
-                None
+        for attempt in 0..5 {
+            match unsafe { OpenClipboard(None) } {
+                Ok(()) => return Some(Self),
+                Err(e) if attempt == 4 => log::error!("Failed to open clipboard: {e}"),
+                Err(_) => std::thread::sleep(Duration::from_millis(5)),
             }
         }
+        None
     }
 }
 
@@ -528,20 +537,31 @@ mod tests {
             png.clone(),
         )));
 
-        let dib = {
+        let (dib, dib_v5) = {
             let _guard = ClipboardGuard::open().expect("open clipboard after writing image");
             assert!(unsafe { IsClipboardFormatAvailable(*CLIPBOARD_PNG_FORMAT) }.is_ok());
+            assert!(unsafe { IsClipboardFormatAvailable(CF_DIBV5.0 as u32) }.is_ok());
             assert!(unsafe { IsClipboardFormatAvailable(CF_DIB.0 as u32) }.is_ok());
             let stored_png = get_clipboard_data(*CLIPBOARD_PNG_FORMAT).unwrap();
             assert!(stored_png.as_bytes().starts_with(&png));
-            get_clipboard_data(CF_DIB.0 as u32)
+            let dib = get_clipboard_data(CF_DIB.0 as u32)
                 .unwrap()
                 .as_bytes()
-                .to_vec()
+                .to_vec();
+            let dib_v5 = get_clipboard_data(CF_DIBV5.0 as u32)
+                .unwrap()
+                .as_bytes()
+                .to_vec();
+            (dib, dib_v5)
         };
-        let decoded = convert_dib_to_bmp(&dib).unwrap();
+        assert_eq!(u32::from_le_bytes(dib[0..4].try_into().unwrap()), 40);
         assert_eq!(
-            image::load_from_memory_with_format(&decoded, image::ImageFormat::Bmp)
+            u32::from_le_bytes(dib_v5[0..4].try_into().unwrap()),
+            DIB_V5_HEADER_SIZE as u32
+        );
+        let decoded_v5 = convert_dib_to_bmp(&dib_v5).unwrap();
+        assert_eq!(
+            image::load_from_memory_with_format(&decoded_v5, image::ImageFormat::Bmp)
                 .unwrap()
                 .to_rgba8(),
             expected
@@ -572,6 +592,12 @@ mod tests {
                 image::ImageFormat::Png,
             ),
             (
+                CF_DIBV5.0 as u32,
+                dib_v5.as_slice(),
+                ImageFormat::Bmp,
+                image::ImageFormat::Bmp,
+            ),
+            (
                 CF_DIB.0 as u32,
                 dib.as_slice(),
                 ImageFormat::Bmp,
@@ -593,12 +619,23 @@ mod tests {
                 })
                 .expect("clipboard contains an image");
             assert_eq!(image.format, expected_format);
-            assert_eq!(
-                image::load_from_memory_with_format(image.bytes(), decoder)
-                    .unwrap()
-                    .to_rgba8(),
-                expected
-            );
+            let actual = image::load_from_memory_with_format(image.bytes(), decoder)
+                .unwrap()
+                .to_rgba8();
+            if format == CF_DIB.0 as u32 {
+                assert_eq!(
+                    actual
+                        .pixels()
+                        .map(|p| [p[0], p[1], p[2]])
+                        .collect::<Vec<_>>(),
+                    expected
+                        .pixels()
+                        .map(|p| [p[0], p[1], p[2]])
+                        .collect::<Vec<_>>()
+                );
+            } else {
+                assert_eq!(actual, expected);
+            }
         }
         unsafe { DestroyWindow(owner).expect("destroy clipboard owner") };
     }
@@ -656,6 +693,22 @@ mod tests {
             .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
             .unwrap();
         let dib = convert_to_dib(&png, ImageFormat::Png).unwrap();
+        assert_eq!(
+            u32::from_le_bytes(dib[0..4].try_into().unwrap()),
+            DIB_V5_HEADER_SIZE as u32
+        );
+        assert_eq!(
+            u32::from_le_bytes(dib[16..20].try_into().unwrap()),
+            BI_BITFIELDS
+        );
+        assert_eq!(
+            u32::from_le_bytes(dib[56..60].try_into().unwrap()),
+            LCS_SRGB
+        );
+        assert_eq!(
+            u32::from_le_bytes(dib[108..112].try_into().unwrap()),
+            LCS_GM_IMAGES
+        );
         let bmp = convert_dib_to_bmp(&dib).unwrap();
         assert_eq!(
             image::load_from_memory_with_format(&bmp, image::ImageFormat::Bmp)
