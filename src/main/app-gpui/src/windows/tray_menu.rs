@@ -1,7 +1,9 @@
+#[cfg(target_os = "macos")]
+use std::cell::Cell;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-#[cfg(not(windows))]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use gpui::AnyWindowHandle;
 #[cfg(windows)]
 use gpui::Global;
@@ -14,8 +16,10 @@ use herogpui::gpui;
 use crate::system::native::TrayRect;
 use crate::system::tray::TrayMenuState;
 use crate::ui::menu::{DismissHandler, MenuEntrance, MenuEntry, MenuView};
+#[cfg(target_os = "linux")]
+use crate::ui::primitives::overlay_fade_out;
 #[cfg(not(windows))]
-use crate::ui::primitives::{overlay_fade_out, OVERLAY_EXIT_MS};
+use crate::ui::primitives::OVERLAY_EXIT_MS;
 #[cfg(not(windows))]
 use crate::windows::registry::{self, WindowKind as RegistryKind};
 
@@ -162,6 +166,8 @@ pub struct TrayMenuWindow {
     dismiss: DismissHandler,
     activation: Option<Subscription>,
     visibility: TrayMenuVisibility,
+    #[cfg(target_os = "macos")]
+    exit_flag: Rc<Cell<bool>>,
     #[cfg(windows)]
     reveal_generation: u64,
     #[cfg(windows)]
@@ -176,24 +182,49 @@ pub struct TrayMenuWindow {
     measured_height: Option<((usize, usize), Pixels)>,
     #[cfg(windows)]
     tray_rect: Option<TrayRect>,
-    #[cfg(not(windows))]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     window_handle: AnyWindowHandle,
 }
 
 #[cfg(target_os = "macos")]
 pub(crate) fn dismiss_open_for_capture(cx: &mut App) {
     if let Some(handle) = registry::handle(RegistryKind::TrayMenu, cx) {
-        let _ = handle.update(cx, |_, window, cx| dismiss_for_capture(window, cx));
+        let _ = handle.update(cx, |_, window, cx| dismiss_immediately(window, cx));
     }
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) fn dismiss_for_capture(window: &mut Window, cx: &mut App) {
+pub(crate) fn dismiss_immediately(window: &mut Window, cx: &mut App) {
     #[cfg(not(test))]
     crate::system::window_visibility::disable_macos_transitions(window);
     crate::system::window_visibility::hide(window);
     window.remove_window();
     registry::forget(RegistryKind::TrayMenu, cx);
+}
+
+#[cfg(target_os = "macos")]
+fn complete_exit_after(handle: AnyWindowHandle, delay_ms: u64, cx: &mut App) {
+    cx.spawn(async move |cx| {
+        cx.background_executor()
+            .timer(std::time::Duration::from_millis(delay_ms))
+            .await;
+        cx.update(|cx| {
+            if registry::handle(RegistryKind::TrayMenu, cx) != Some(handle) {
+                return;
+            }
+            let Some(handle) = handle.downcast::<TrayMenuWindow>() else {
+                return;
+            };
+            let _ = handle.update(cx, |this, window, cx| {
+                if this.visibility != TrayMenuVisibility::Closing {
+                    return;
+                }
+                this.visibility = TrayMenuVisibility::Hidden;
+                dismiss_immediately(window, cx);
+            });
+        });
+    })
+    .detach();
 }
 
 impl TrayMenuWindow {
@@ -208,12 +239,16 @@ impl TrayMenuWindow {
     ) -> Self {
         #[cfg(not(windows))]
         let _ = (&dismiss, tray_rect);
+        #[cfg(target_os = "macos")]
+        let exit_flag = menu.read(cx).exit_handle();
         let mut view = Self {
             menu,
             #[cfg(windows)]
             dismiss,
             activation: None,
             visibility: TrayMenuVisibility::new(visible),
+            #[cfg(target_os = "macos")]
+            exit_flag,
             #[cfg(windows)]
             reveal_generation: u64::from(visible),
             #[cfg(windows)]
@@ -228,7 +263,7 @@ impl TrayMenuWindow {
             measured_height: None,
             #[cfg(windows)]
             tray_rect,
-            #[cfg(not(windows))]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             window_handle: window.window_handle(),
         };
         view.activation = Some(cx.observe_window_activation(window, |this, window, cx| {
@@ -262,7 +297,24 @@ impl TrayMenuWindow {
         cx.defer(crate::system::memory::schedule_idle_reclaim);
     }
 
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    fn finish_close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if cx.reduce_motion() {
+            self.visibility = TrayMenuVisibility::Hidden;
+            dismiss_immediately(window, cx);
+            return;
+        }
+        self.exit_flag.set(true);
+        let handle = self.window_handle;
+        cx.notify();
+        window.refresh();
+        window.on_next_frame(move |_, cx| {
+            complete_exit_after(handle, OVERLAY_EXIT_MS, cx);
+        });
+        complete_exit_after(handle, OVERLAY_EXIT_MS * 2, cx);
+    }
+
+    #[cfg(target_os = "linux")]
     fn finish_close(&mut self, _: &mut Window, cx: &mut Context<Self>) {
         let handle = self.window_handle;
         cx.spawn(async move |_this, cx| {
@@ -271,8 +323,6 @@ impl TrayMenuWindow {
                 .await;
             cx.update(|cx| {
                 let _ = handle.update(cx, |_, window, _| {
-                    #[cfg(all(target_os = "macos", not(test)))]
-                    crate::system::window_visibility::disable_macos_transitions(window);
                     window.remove_window();
                 });
                 if registry::handle(RegistryKind::TrayMenu, cx) == Some(handle) {
@@ -407,13 +457,19 @@ impl TrayMenuWindow {
             cache.visible = opened.is_some();
         }
 
-        #[cfg(all(target_os = "macos", not(test)))]
-        if let Some(handle) = registry::handle(RegistryKind::TrayMenu, cx) {
-            let _ = handle.update(cx, |_, window, _| {
-                crate::system::window_visibility::disable_macos_transitions(window);
+        #[cfg(target_os = "macos")]
+        {
+            if let Some(handle) = registry::handle(RegistryKind::TrayMenu, cx) {
+                let _ = handle.downcast::<TrayMenuWindow>().map(|handle| {
+                    handle.update(cx, |this, window, cx| this.begin_close(window, cx))
+                });
+                return;
+            }
+            registry::toggle(RegistryKind::TrayMenu, cx, |cx| {
+                Self::open(tray_rect, true, cx).map(Into::into)
             });
         }
-        #[cfg(not(windows))]
+        #[cfg(target_os = "linux")]
         registry::toggle(RegistryKind::TrayMenu, cx, |cx| {
             Self::open(tray_rect, true, cx).map(Into::into)
         });
@@ -447,7 +503,7 @@ impl TrayMenuWindow {
             window_bounds
         };
         let make_options = || {
-            super::popup_window_options(
+            let mut options = super::popup_window_options(
                 initial_bounds,
                 super::PopupWindowConfig {
                     focus: visible,
@@ -455,7 +511,11 @@ impl TrayMenuWindow {
                     display_id: geometry.display_id,
                     ..Default::default()
                 },
-            )
+            );
+            if cfg!(target_os = "macos") {
+                options.inactive_frame_interval = None;
+            }
+            options
         };
         let build_tray = |window: &mut Window, cx: &mut App| {
             window.set_window_title("Poratake tray menu");
@@ -635,15 +695,21 @@ impl Render for TrayMenuWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let content = crate::ui::font::root().w_full().child(self.menu.clone());
         #[cfg(target_os = "macos")]
-        let content = content.on_children_prepainted(|bounds, window, _| {
-            let height = bounds[0].size.height;
-            if height_matches_viewport(height, window) {
-                return;
-            }
-            window.on_next_frame(move |window, _| {
-                window.resize(size(window.viewport_size().width, height));
-            });
-        });
+        let content = {
+            let closing = self.visibility == TrayMenuVisibility::Closing;
+            content.on_children_prepainted(move |bounds, window, _| {
+                if closing {
+                    return;
+                }
+                let height = bounds[0].size.height;
+                if height_matches_viewport(height, window) {
+                    return;
+                }
+                window.on_next_frame(move |window, _| {
+                    window.resize(size(window.viewport_size().width, height));
+                });
+            })
+        };
         #[cfg(windows)]
         let content = {
             let weak = cx.entity().downgrade();
@@ -654,10 +720,10 @@ impl Render for TrayMenuWindow {
         };
         let surface = crate::ui::window_root::focus_root(content, window, cx);
 
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         return surface.into_any_element();
 
-        #[cfg(not(windows))]
+        #[cfg(target_os = "linux")]
         match self.visibility {
             TrayMenuVisibility::Closing => {
                 overlay_fade_out("tray-menu-exit", surface).into_any_element()
@@ -1436,19 +1502,55 @@ mod tests {
             TrayMenuVisibility::Visible
         );
 
+        #[cfg(target_os = "macos")]
+        cx.update(|cx| registry::remember(RegistryKind::TrayMenu, window, cx));
         let other = cx.add_window(|window, _| {
             window.activate_window();
             gpui::Empty
         });
         cx.run_until_parked();
 
+        #[cfg(not(target_os = "macos"))]
         assert!(
             !handle
                 .update(cx, |this, _, _| this.visibility.is_shown())
                 .unwrap(),
             "deactivating the tray menu must close it"
         );
+        #[cfg(target_os = "macos")]
+        {
+            assert!(
+                handle
+                    .update(cx, |this, _, _| this.visibility
+                        == TrayMenuVisibility::Closing
+                        && this.exit_flag.get())
+                    .unwrap(),
+                "deactivating the tray menu must begin its exit transition"
+            );
+            assert!(
+                cx.update(|cx| cx.windows().contains(&window)),
+                "the menu must stay mounted while its exit transition paints"
+            );
+            window
+                .update(cx, |_, window, cx| {
+                    window.simulate_next_frame(cx);
+                })
+                .unwrap();
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(OVERLAY_EXIT_MS + 1));
+            cx.run_until_parked();
+            assert!(
+                !cx.update(|cx| cx.windows().contains(&window)),
+                "the completed tray exit must remove the window"
+            );
+            assert!(
+                cx.update(|cx| registry::handle(RegistryKind::TrayMenu, cx))
+                    .is_none(),
+                "the completed tray exit must forget the window"
+            );
+        }
 
+        #[cfg(not(target_os = "macos"))]
         let _ = window.update(cx, |_, window, _| window.remove_window());
         let _ = other.update(cx, |_, window, _| window.remove_window());
         cx.run_until_parked();

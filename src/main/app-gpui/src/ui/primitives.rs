@@ -102,7 +102,7 @@ pub enum EnterFrom {
     Bottom,
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
 pub fn overlay_fade_out<E>(id: impl Into<gpui::ElementId>, element: E) -> gpui::AnimationElement<E>
 where
     E: gpui::IntoElement + Styled + 'static,

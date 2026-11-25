@@ -677,18 +677,12 @@ pub fn raise_all(generation: u64, cx: &mut App) {
                         overlay.pointer = Some(position);
                         overlay.hovered_window = overlay.window_at(position);
                     }
-                    if tracked.focus {
-                        window.activate_window();
-                    }
                     cx.notify();
                 });
                 continue;
             }
             let _ = tracked.handle.update(cx, |_, window, _| {
                 crate::system::window_visibility::show_overlay(window, tracked.focus);
-                if tracked.focus {
-                    window.activate_window();
-                }
             });
         }
     }
@@ -1393,6 +1387,8 @@ fn reveal_overlay_window(window: &Window, launch: OverlayLaunch, active: bool) -
     if !active || launch.deferred_show {
         return false;
     }
+    #[cfg(target_os = "macos")]
+    crate::system::window_visibility::show_overlay(window, launch.focus);
     set_overlay_topmost(window);
     true
 }
@@ -1466,9 +1462,6 @@ fn open_overlay_window(
                 #[cfg(target_os = "macos")]
                 if !launch.deferred_show {
                     crate::system::window_visibility::show_overlay(window, launch.focus);
-                    if launch.focus {
-                        window.activate_window();
-                    }
                 }
                 window.focus(&overlay.focus_handle, cx);
             });
@@ -1492,6 +1485,9 @@ fn open_overlay_window(
     } else {
         Bounds::new(display_bounds.origin, gpui::size(px(1.0), px(1.0)))
     };
+    #[cfg(target_os = "macos")]
+    let show_immediately = false;
+    #[cfg(not(target_os = "macos"))]
     let show_immediately = active && !launch.deferred_show;
     let make_options =
         || overlay_options(initial_bounds, display_id, launch.focus, show_immediately);
@@ -1524,12 +1520,15 @@ fn open_overlay_window(
             after_new(overlay, cx);
         });
         let shown = reveal_overlay_window(window, launch, active);
+        #[cfg(target_os = "macos")]
+        let _ = shown;
         #[cfg(windows)]
         if shown {
             view.update(cx, |overlay, _| {
                 overlay.surface_state = PooledSurfaceState::Live;
             });
         }
+        #[cfg(not(target_os = "macos"))]
         if launch.focus && shown {
             window.activate_window();
         }
@@ -4456,6 +4455,179 @@ mod tests {
                 true,
             ));
         });
+    }
+
+    #[cfg(target_os = "macos")]
+    #[herogpui::test]
+    fn macos_fresh_overlay_focused_reveal_activates(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let config =
+            Arc::new(ConfigStore::load_at(dir.path().join("config.json")).expect("load config"));
+        cx.update(|cx| crate::state::set_test_state(cx, config));
+        let display_id = cx.read(|cx| cx.primary_display().expect("primary display").id());
+        let display_bounds = cx.read(|cx| cx.primary_display().expect("primary display").bounds());
+        let window_count = cx.read(|cx| cx.windows().len());
+
+        let opened = cx.update(|cx| {
+            super::AreaOverlay::open(
+                crate::state::state(cx),
+                display_id,
+                display_bounds,
+                crate::capture::intent::CaptureIntent::Screenshot,
+                super::OverlayLaunch {
+                    focus: true,
+                    deferred_show: false,
+                    generation: 0,
+                },
+                cx,
+            )
+            .expect("open fresh overlay")
+        });
+        cx.run_until_parked();
+        opened
+            .update(cx, |_, window, _| assert!(window.is_window_active()))
+            .expect("fresh focused reveal must activate");
+        assert_eq!(cx.read(|cx| cx.windows().len()), window_count + 1);
+        cx.update(super::close_all);
+        cx.run_until_parked();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[herogpui::test]
+    fn macos_deferred_all_in_one_raise_activates_after_deactivation(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let config =
+            Arc::new(ConfigStore::load_at(dir.path().join("config.json")).expect("load config"));
+        cx.update(|cx| crate::state::set_test_state(cx, config));
+        let display_id = cx.read(|cx| cx.primary_display().expect("primary display").id());
+        let display_bounds = cx.read(|cx| cx.primary_display().expect("primary display").bounds());
+        cx.update(super::prewarm);
+
+        let first = cx.update(|cx| {
+            super::AreaOverlay::open_all_in_one(
+                crate::state::state(cx),
+                display_id,
+                display_bounds,
+                crate::capture::all_in_one::Choices::default(),
+                super::OverlayLaunch {
+                    focus: true,
+                    deferred_show: true,
+                    generation: 0,
+                },
+                cx,
+            )
+            .expect("open deferred all-in-one overlay")
+        });
+        cx.run_until_parked();
+        first
+            .update(cx, |_, window, _| assert!(!window.is_window_active()))
+            .expect("deferred overlay must remain inactive before raise");
+        cx.update(|cx| super::raise_all(0, cx));
+        cx.run_until_parked();
+        first
+            .update(cx, |_, window, _| assert!(window.is_window_active()))
+            .expect("deferred raise must activate the first session");
+        cx.update(|cx| {
+            assert_eq!(super::replace_all(cx), Some(0));
+        });
+        cx.run_until_parked();
+
+        let other = cx.add_window(|window, _| {
+            window.activate_window();
+            gpui::Empty
+        });
+        cx.run_until_parked();
+        let second = cx.update(|cx| {
+            super::AreaOverlay::open_all_in_one(
+                crate::state::state(cx),
+                display_id,
+                display_bounds,
+                crate::capture::all_in_one::Choices::default(),
+                super::OverlayLaunch {
+                    focus: true,
+                    deferred_show: true,
+                    generation: 0,
+                },
+                cx,
+            )
+            .expect("reopen deferred all-in-one overlay")
+        });
+        assert_eq!(second, first);
+        cx.update(|cx| super::raise_all(0, cx));
+        cx.run_until_parked();
+        second
+            .update(cx, |_, window, _| assert!(window.is_window_active()))
+            .expect("deferred raise must reactivate after another window was active");
+        let _ = other.update(cx, |_, window, _| window.remove_window());
+        cx.update(super::close_all);
+        cx.run_until_parked();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[herogpui::test]
+    fn macos_prewarmed_overlay_repeated_focused_reveal_reuses_window(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let config =
+            Arc::new(ConfigStore::load_at(dir.path().join("config.json")).expect("load config"));
+        cx.update(|cx| crate::state::set_test_state(cx, config));
+
+        let display_id = cx.read(|cx| cx.primary_display().expect("primary display").id());
+        let display_bounds = cx.read(|cx| cx.primary_display().expect("primary display").bounds());
+        cx.update(super::prewarm);
+        let window_count = cx.read(|cx| cx.windows().len());
+
+        let first = cx.update(|cx| {
+            super::AreaOverlay::open(
+                crate::state::state(cx),
+                display_id,
+                display_bounds,
+                crate::capture::intent::CaptureIntent::Screenshot,
+                super::OverlayLaunch {
+                    focus: true,
+                    deferred_show: false,
+                    generation: 0,
+                },
+                cx,
+            )
+            .expect("open prewarmed overlay")
+        });
+        cx.run_until_parked();
+        first
+            .update(cx, |_, window, _| assert!(window.is_window_active()))
+            .expect("first focused reveal must activate");
+        assert_eq!(cx.read(|cx| cx.windows().len()), window_count);
+
+        cx.update(|cx| {
+            assert_eq!(super::replace_all(cx), Some(0));
+            assert!(super::session(cx)
+                .pooled
+                .iter()
+                .any(|overlay| overlay.display_id == display_id));
+        });
+
+        let second = cx.update(|cx| {
+            super::AreaOverlay::open(
+                crate::state::state(cx),
+                display_id,
+                display_bounds,
+                crate::capture::intent::CaptureIntent::Screenshot,
+                super::OverlayLaunch {
+                    focus: true,
+                    deferred_show: false,
+                    generation: 0,
+                },
+                cx,
+            )
+            .expect("reopen pooled overlay")
+        });
+        cx.run_until_parked();
+        assert_eq!(second, first);
+        second
+            .update(cx, |_, window, _| assert!(window.is_window_active()))
+            .expect("repeated focused reveal must activate");
+        assert_eq!(cx.read(|cx| cx.windows().len()), window_count);
+        cx.update(super::close_all);
+        cx.run_until_parked();
     }
 
     #[cfg(windows)]

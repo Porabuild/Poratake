@@ -356,7 +356,7 @@ pub fn entries(
                 item = item.on_select(move |window, cx| {
                     #[cfg(target_os = "macos")]
                     if intent.starts_capture() {
-                        crate::windows::tray_menu::dismiss_for_capture(window, cx);
+                        crate::windows::tray_menu::dismiss_immediately(window, cx);
                         cx.defer(move |cx| crate::intents::dispatch(intent, tray_rect, cx));
                         return;
                     }

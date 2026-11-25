@@ -15,24 +15,49 @@ pub fn show(window: &Window) {
 
 #[cfg(target_os = "macos")]
 pub fn show_overlay(window: &Window, focus: bool) {
+    if focus {
+        window.activate_window();
+        return;
+    }
+    invalidate_overlay_view(window);
     #[cfg(not(test))]
     {
-        use cocoa::base::nil;
         use objc::{msg_send, sel, sel_impl};
 
         let Some(ns_window) = appkit_window(window) else {
             return;
         };
         unsafe {
-            if focus {
-                let _: () = msg_send![ns_window, makeKeyAndOrderFront: nil];
-            } else {
-                let _: () = msg_send![ns_window, orderFrontRegardless];
+            let _: () = msg_send![ns_window, orderFrontRegardless];
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn invalidate_overlay_view(window: &Window) {
+    #[cfg(not(test))]
+    {
+        use objc::{msg_send, sel, sel_impl};
+
+        if let Some(view) = appkit_view(window) {
+            unsafe {
+                let _: () = msg_send![view, setNeedsDisplay: true];
             }
         }
     }
     #[cfg(test)]
-    let _ = (window, focus);
+    let _ = window;
+}
+
+#[cfg(all(target_os = "macos", not(test)))]
+fn appkit_view(window: &Window) -> Option<cocoa::base::id> {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    let handle = HasWindowHandle::window_handle(window).ok()?;
+    let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
+        return None;
+    };
+    Some(appkit.ns_view.as_ptr() as cocoa::base::id)
 }
 
 #[cfg(all(windows, not(test)))]
@@ -55,13 +80,9 @@ fn platform_set_visible(window: &Window, visible: bool) {
 fn appkit_window(window: &Window) -> Option<cocoa::base::id> {
     use cocoa::base::{id, nil};
     use objc::{msg_send, sel, sel_impl};
-    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
-    let handle = HasWindowHandle::window_handle(window).ok()?;
-    let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
-        return None;
-    };
-    let ns_window: id = unsafe { msg_send![appkit.ns_view.as_ptr() as id, window] };
+    let view = appkit_view(window)?;
+    let ns_window: id = unsafe { msg_send![view, window] };
     (ns_window != nil).then_some(ns_window)
 }
 
