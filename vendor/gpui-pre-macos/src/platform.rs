@@ -161,6 +161,12 @@ unsafe fn build_classes() {
     }
 }
 
+pub(crate) fn activate_application(ignoring_other_apps: bool, marker: MainThreadMarker) {
+    let app = NSApplication::sharedApplication(marker);
+    #[allow(deprecated)]
+    app.activateIgnoringOtherApps(ignoring_other_apps);
+}
+
 pub struct MacPlatform(Mutex<MacPlatformState>, MainThreadMarker);
 
 pub(crate) struct MacPlatformState {
@@ -641,10 +647,8 @@ impl Platform for MacPlatform {
         }
     }
 
-    #[allow(deprecated)]
     fn activate(&self, ignoring_other_apps: bool) {
-        let app = NSApplication::sharedApplication(self.1);
-        app.activateIgnoringOtherApps(ignoring_other_apps);
+        activate_application(ignoring_other_apps, self.1);
     }
 
     fn set_activation_policy(&self, policy: ActivationPolicy) {

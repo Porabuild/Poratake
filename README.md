@@ -80,7 +80,7 @@ Published installers are distributed through the [GitHub releases page](https://
 
 ## Contributing
 
-Contributions are welcome. Please open an [issue](https://github.com/Porabuild/Poratake/issues) before starting a substantial change so the approach and scope can be discussed first.
+Contributions are welcome. Please open an [issue](https://github.com/Porabuild/Poratake/issues) before starting a substantial change so the approach and scope can be discussed first. Rust UI dependency fixes and GPUI upgrades must follow [docs/gpui-vendoring.md](docs/gpui-vendoring.md).
 
 ## License and Attribution
 

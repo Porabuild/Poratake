@@ -110,6 +110,16 @@ Poratake is a rebranded fork of Capty (https://github.com/capty-app/capty) and i
 - For menu icons, Use the png icon and user will download them.
 - No guessing and No assumption! Work with certainity.
 
+## HeroGPUI and vendored GPUI
+
+Canonical workflow: `docs/gpui-vendoring.md`. Read it before changing HeroGPUI, `vendor/gpui-pre*`, or the GPUI pins.
+
+- HeroGPUI is not vendored here. HeroGPUI bugs are fixed in `Porabuild/HeroGPUI`, released, and then consumed here by bumping the exact pin.
+- GPUI framework/platform bugs are fixed directly in Poratake's vendored `vendor/gpui-pre*` patchset, not hidden behind app-side wrappers. When the behavior is clearly wrong upstream, also prepare the equivalent minimal patch against `zed-industries/zed`.
+- HeroGPUI, the direct `gpui-pre` dependency, and the vendored `gpui-pre*` crates must stay on one exact coherent GPUI version.
+- Every intentional vendored GPUI difference must be recorded in the patch inventory in `docs/gpui-vendoring.md` in the same commit.
+- When upgrading `gpui-pre`, diff the vendored crates against pristine copies of the previous crates.io version, reconcile every downstream hunk, forward-port only the patches still needed, and update the inventory.
+
 ## Coding examples
 
 ### Nesting
