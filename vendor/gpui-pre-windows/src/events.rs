@@ -156,6 +156,7 @@ impl WindowsWindowInner {
             WM_SETTINGCHANGE => self.handle_system_settings_changed(handle, wparam, lparam),
             WM_INPUTLANGCHANGE => self.handle_input_language_changed(),
             WM_SHOWWINDOW => self.handle_window_visibility_changed(handle, wparam),
+            WM_WINDOWPOSCHANGED => self.handle_window_pos_changed_msg(lparam),
             DM_POINTERHITTEST => self.handle_dm_pointer_hit_test(wparam),
             WM_GETOBJECT => self.handle_wm_getobject(wparam, lparam),
             WM_GPUI_CURSOR_STYLE_CHANGED
@@ -1374,6 +1375,19 @@ impl WindowsWindowInner {
                 .log_err();
             }
             self.draw_window(handle, false);
+        }
+        None
+    }
+
+    fn handle_window_pos_changed_msg(self: &Rc<Self>, lparam: LPARAM) -> Option<isize> {
+        if lparam.0 != 0 {
+            let pos = unsafe { &*(lparam.0 as *const WINDOWPOS) };
+            if pos.flags.contains(SWP_SHOWWINDOW) {
+                self.report_visibility();
+                self.vsync_wake.notify();
+            } else if pos.flags.contains(SWP_HIDEWINDOW) {
+                self.report_visibility();
+            }
         }
         None
     }

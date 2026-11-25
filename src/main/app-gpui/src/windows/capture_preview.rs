@@ -1037,7 +1037,7 @@ fn reveal_preview_when_ready(
         return;
     }
     if let Some(hwnd) = native_window {
-        crate::system::window_composition::reveal_window(hwnd, false, 0);
+        crate::system::window_composition::reveal_window(hwnd, false);
         if !unsafe { windows::Win32::UI::WindowsAndMessaging::IsWindowVisible(hwnd).as_bool() } {
             fail_preview_reveal(window, view, cx);
             return;

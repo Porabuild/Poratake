@@ -15,8 +15,7 @@ use crate::system::native::TrayRect;
 use crate::system::tray::TrayMenuState;
 use crate::ui::menu::{DismissHandler, MenuEntrance, MenuEntry, MenuView};
 #[cfg(not(windows))]
-use crate::ui::primitives::overlay_fade_out;
-use crate::ui::primitives::OVERLAY_EXIT_MS;
+use crate::ui::primitives::{overlay_fade_out, OVERLAY_EXIT_MS};
 #[cfg(not(windows))]
 use crate::windows::registry::{self, WindowKind as RegistryKind};
 
@@ -25,8 +24,6 @@ const ITEM_HEIGHT: f32 = crate::theme::bridge::TRAY_MENU_ROW_HEIGHT;
 const SEPARATOR_HEIGHT: f32 = 9.0;
 const MENU_PADDING: f32 = 8.0;
 const SCREEN_GAP: f32 = 8.0;
-#[cfg(windows)]
-const MENU_FADE_MS: u32 = 80;
 #[cfg(any(windows, test))]
 const MAX_LAYOUT_RESIZE_ATTEMPTS: u8 = 2;
 /// Clicking the tray icon while the menu is open first deactivates the window
@@ -259,7 +256,7 @@ impl TrayMenuWindow {
 
     #[cfg(windows)]
     fn finish_close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        hide_tray_menu_window(window);
+        crate::system::window_surface::hide(window);
         self.visibility = TrayMenuVisibility::Hidden;
         tray_menu_cache(cx).visible = false;
         cx.defer(crate::system::memory::schedule_idle_reclaim);
@@ -591,7 +588,7 @@ impl TrayMenuWindow {
                 return;
             }
             configure_tray_menu_window(window);
-            crate::system::window_surface::reveal(window, true, MENU_FADE_MS);
+            crate::system::window_surface::reveal(window, true);
             window.activate_window();
             let settle_view = view.clone();
             window.on_next_frame(move |window, cx| {
@@ -793,18 +790,6 @@ fn handle_windows_prepaint(
             });
             TrayMenuWindow::schedule_reveal(view, window, generation);
         }
-    }
-}
-
-#[cfg(windows)]
-fn hide_tray_menu_window(window: &Window) {
-    use windows::Win32::UI::WindowsAndMessaging::{AnimateWindow, AW_BLEND, AW_HIDE};
-
-    let Some(hwnd) = crate::windows::window_hwnd(window) else {
-        return;
-    };
-    unsafe {
-        let _ = AnimateWindow(hwnd, OVERLAY_EXIT_MS as u32, AW_HIDE | AW_BLEND);
     }
 }
 
@@ -1339,6 +1324,134 @@ mod tests {
             .update(cx, |_, window, _| window.remove_window())
             .unwrap();
         cx.run_until_parked();
+    }
+
+    fn open_settled_tray_menu(
+        cx: &mut gpui::TestAppContext,
+    ) -> (
+        tempfile::TempDir,
+        WindowHandle<TrayMenuWindow>,
+        gpui::AnyWindowHandle,
+    ) {
+        let scratch = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(
+            crate::config::store::ConfigStore::load_at(scratch.path().join("config.json")).unwrap(),
+        );
+        store.update(|config| config.appearance.mode = "dark".into());
+        cx.update(|cx| crate::state::set_test_state(cx, store));
+
+        let handle = cx.update(|cx| TrayMenuWindow::open(None, true, cx).unwrap());
+        let window: gpui::AnyWindowHandle = handle.into();
+        window
+            .update(cx, |_, window, _| window.activate_window())
+            .unwrap();
+        cx.run_until_parked();
+        for _ in 0..8 {
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(150));
+            window
+                .update(cx, |_, window, cx| {
+                    window.simulate_next_frame(cx);
+                    window.bounds_changed(cx);
+                    window.refresh();
+                    window.draw(cx).clear(cx);
+                })
+                .unwrap();
+            cx.run_until_parked();
+        }
+        (scratch, handle, window)
+    }
+
+    #[herogpui::test]
+    fn hovering_a_tray_menu_item_paints_the_hover_background(cx: &mut gpui::TestAppContext) {
+        use herogpui::test::TestWindowExt;
+
+        let (_scratch, _handle, window) = open_settled_tray_menu(cx);
+
+        let hover_bg = cx.update(|cx| {
+            use herogpui::theme::ActiveTheme;
+            cx.colors().default.hover()
+        });
+        let has_hover_quad = |cx: &mut gpui::TestAppContext| {
+            window
+                .update(cx, |_, window, _| {
+                    window.painted_quads().into_iter().any(|quad| {
+                        let Some(color) = quad.background.as_solid() else {
+                            return false;
+                        };
+                        (color.h - hover_bg.h).abs() < 0.01
+                            && (color.s - hover_bg.s).abs() < 0.01
+                            && (color.l - hover_bg.l).abs() < 0.01
+                            && (color.a - hover_bg.a).abs() < 0.01
+                            && quad.bounds.size.width.0 > 100.0
+                    })
+                })
+                .unwrap()
+        };
+
+        assert!(
+            !has_hover_quad(cx),
+            "no row should be hovered before mouse movement"
+        );
+
+        let mut visual = gpui::VisualTestContext::from_window(window, cx);
+        visual.simulate_mouse_move(
+            gpui::point(px(MENU_WIDTH / 2.0), px(MENU_PADDING + ITEM_HEIGHT / 2.0)),
+            None,
+            gpui::Modifiers::none(),
+        );
+        visual.settle();
+        drop(visual);
+        assert!(
+            has_hover_quad(cx),
+            "hovering a tray menu row must paint its hover background"
+        );
+
+        let mut visual = gpui::VisualTestContext::from_window(window, cx);
+        visual.simulate_mouse_move(
+            gpui::point(px(-10.0), px(-10.0)),
+            None,
+            gpui::Modifiers::none(),
+        );
+        visual.settle();
+        drop(visual);
+        assert!(
+            !has_hover_quad(cx),
+            "moving the pointer off the menu must clear hover"
+        );
+
+        window
+            .update(cx, |_, window, _| window.remove_window())
+            .unwrap();
+        cx.run_until_parked();
+    }
+
+    #[herogpui::test]
+    fn deactivating_a_visible_tray_menu_closes_it(cx: &mut gpui::TestAppContext) {
+        *CLOSED_ON_DEACTIVATION.lock() = None;
+        let (_scratch, handle, window) = open_settled_tray_menu(cx);
+        assert_eq!(
+            handle.update(cx, |this, _, _| this.visibility).unwrap(),
+            TrayMenuVisibility::Visible
+        );
+
+        let other = cx.add_window(|window, _| {
+            window.activate_window();
+            gpui::Empty
+        });
+        cx.run_until_parked();
+
+        assert!(
+            !handle
+                .update(cx, |this, _, _| this.visibility.is_shown())
+                .unwrap(),
+            "deactivating the tray menu must close it"
+        );
+
+        let _ = window.update(cx, |_, window, _| window.remove_window());
+        let _ = other.update(cx, |_, window, _| window.remove_window());
+        cx.run_until_parked();
+        *CLOSED_ON_DEACTIVATION.lock() = None;
     }
 
     #[test]

@@ -476,28 +476,21 @@ pub fn stage_window(window: HWND, bounds: Bounds<Pixels>, scale: f32, activate: 
     }
 }
 
-pub fn reveal_window(window: HWND, activate: bool, duration_ms: u32) {
-    use windows::Win32::UI::WindowsAndMessaging::{
-        AnimateWindow, ShowWindow, AW_ACTIVATE, AW_BLEND, SW_HIDE, SW_SHOW, SW_SHOWNOACTIVATE,
-    };
+pub fn reveal_window(window: HWND, activate: bool) {
+    use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_SHOW, SW_SHOWNOACTIVATE};
 
+    set_cloaked(window, false);
     unsafe {
-        if duration_ms > 0 {
-            let _ = ShowWindow(window, SW_HIDE);
-        }
-        set_cloaked(window, false);
-        if duration_ms == 0 {
-            let _ = ShowWindow(window, if activate { SW_SHOW } else { SW_SHOWNOACTIVATE });
-            return;
-        }
-        let flags = if activate {
-            AW_BLEND | AW_ACTIVATE
-        } else {
-            AW_BLEND
-        };
-        if AnimateWindow(window, duration_ms, flags).is_err() {
-            let _ = ShowWindow(window, if activate { SW_SHOW } else { SW_SHOWNOACTIVATE });
-        }
+        let _ = ShowWindow(window, if activate { SW_SHOW } else { SW_SHOWNOACTIVATE });
+    }
+}
+
+pub fn hide_window(window: HWND) {
+    use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE};
+
+    set_cloaked(window, true);
+    unsafe {
+        let _ = ShowWindow(window, SW_HIDE);
     }
 }
 

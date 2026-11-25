@@ -43,9 +43,16 @@ pub fn stage(window: &Window, bounds: Bounds<Pixels>, scale: Option<f32>, activa
 }
 
 #[cfg(windows)]
-pub fn reveal(window: &Window, activate: bool, duration_ms: u32) {
+pub fn reveal(window: &Window, activate: bool) {
     if let Some(hwnd) = crate::windows::window_hwnd(window) {
-        crate::system::window_composition::reveal_window(hwnd, activate, duration_ms);
+        crate::system::window_composition::reveal_window(hwnd, activate);
+    }
+}
+
+#[cfg(windows)]
+pub fn hide(window: &Window) {
+    if let Some(hwnd) = crate::windows::window_hwnd(window) {
+        crate::system::window_composition::hide_window(hwnd);
     }
 }
 

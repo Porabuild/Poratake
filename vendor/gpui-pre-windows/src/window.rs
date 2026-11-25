@@ -1007,6 +1007,12 @@ impl PlatformWindow for WindowsWindow {
         self.state.callbacks.request_frame.set(Some(callback));
     }
 
+    fn schedule_frame(&self) {
+        if unsafe { IsWindowVisible(self.0.hwnd).as_bool() && !IsIconic(self.0.hwnd).as_bool() } {
+            self.0.vsync_wake.notify();
+        }
+    }
+
     fn on_input(&self, callback: Box<dyn FnMut(PlatformInput) -> DispatchEventResult>) {
         self.state.callbacks.input.set(Some(callback));
     }
