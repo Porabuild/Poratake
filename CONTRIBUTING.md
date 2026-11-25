@@ -66,6 +66,15 @@ bun run dev:gpui
 Omarchy 4.5 installation and the Wayland feature matrix are documented in
 [docs/omarchy.md](docs/omarchy.md).
 
+### HeroGPUI and GPUI dependencies
+
+HeroGPUI is consumed as an exact crates.io pin and is not vendored. GPUI's
+framework and platform backend crates are vendored under `vendor/gpui-pre*` as
+a downstream patchset. Read [docs/gpui-vendoring.md](docs/gpui-vendoring.md)
+before changing those crates, the HeroGPUI pin, or the GPUI version. The
+document defines where fixes belong, how upstream Zed patches are prepared, and
+how vendored patches must be forward-ported during GPUI upgrades.
+
 ### Running the app
 
 ```bash

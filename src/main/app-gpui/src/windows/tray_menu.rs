@@ -278,6 +278,7 @@ impl TrayMenuWindow {
                 if registry::handle(RegistryKind::TrayMenu, cx) == Some(handle) {
                     registry::forget(RegistryKind::TrayMenu, cx);
                 }
+                crate::system::memory::schedule_idle_reclaim(cx);
             });
         })
         .detach();

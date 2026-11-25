@@ -1849,6 +1849,9 @@ impl PlatformWindow for MacWindow {
                         let view = unsafe { &*view.cast::<NSView>() };
                         view.setNeedsDisplay(true);
                     }
+                    if let Some(marker) = crate::main_thread_marker() {
+                        crate::activate_application(true, marker);
+                    }
                     window.makeKeyAndOrderFront(None);
                 }
             })
