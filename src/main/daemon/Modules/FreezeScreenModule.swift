@@ -3,6 +3,23 @@ import Foundation
 import QuartzCore
 
 class FreezeScreenModule: Module {
+    static func overlayWindowLevel() -> NSWindow.Level {
+        NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.popUpMenuWindow)) - 1)
+    }
+
+    static func cursorWindowID(in windows: [[String: Any]]) -> CGWindowID? {
+        let cursorLevel = Int(CGWindowLevelForKey(.cursorWindow))
+        for window in windows {
+            guard window[kCGWindowLayer as String] as? Int == cursorLevel,
+                  window[kCGWindowOwnerName as String] as? String == "Window Server",
+                  window[kCGWindowName as String] as? String == "Cursor",
+                  let number = window[kCGWindowNumber as String] as? Int,
+                  let windowID = CGWindowID(exactly: number) else { continue }
+            return windowID
+        }
+        return nil
+    }
+
     let name = DaemonContract.FreezeScreen.module
     private var overlayWindows: [NSWindow] = []
     private var eventTap: CFMachPort?
@@ -119,18 +136,25 @@ class FreezeScreenModule: Module {
         runLoopSource = nil
     }
     
-    private func captureFrame(screenFrame: CGRect, mainScreenHeight: CGFloat) -> (image: CGImage, rect: CGRect)? {
+    private func captureFrame(
+        screenFrame: CGRect,
+        mainScreenHeight: CGFloat,
+        cursorWindowID: CGWindowID?
+    ) -> (image: CGImage, rect: CGRect)? {
         let captureRect = CGRect(
             x: screenFrame.origin.x,
             y: mainScreenHeight - screenFrame.origin.y - screenFrame.height,
             width: screenFrame.width,
             height: screenFrame.height
         )
+        let options: CGWindowListOption = cursorWindowID == nil
+            ? .optionOnScreenOnly
+            : .optionOnScreenBelowWindow
 
         guard let cgImage = CGWindowListCreateImage(
             captureRect,
-            .optionOnScreenOnly,
-            kCGNullWindowID,
+            options,
+            cursorWindowID ?? kCGNullWindowID,
             [.bestResolution]
         ) else {
             return nil
@@ -146,13 +170,16 @@ class FreezeScreenModule: Module {
         let screens = NSScreen.screens
         let mainScreenHeight = screens.first?.frame.height ?? 0
         let screenFrames = screens.map(\.frame)
+        let cursorWindowID = (CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]])
+            .flatMap { Self.cursorWindowID(in: $0) }
 
         var capturedFrames = Array<(image: CGImage, rect: CGRect)?>(repeating: nil, count: screenFrames.count)
         if screenFrames.count <= 1 {
             for index in screenFrames.indices {
                 capturedFrames[index] = captureFrame(
                     screenFrame: screenFrames[index],
-                    mainScreenHeight: mainScreenHeight
+                    mainScreenHeight: mainScreenHeight,
+                    cursorWindowID: cursorWindowID
                 )
             }
         } else {
@@ -160,7 +187,8 @@ class FreezeScreenModule: Module {
                 DispatchQueue.concurrentPerform(iterations: screenFrames.count) { index in
                     buffer[index] = captureFrame(
                         screenFrame: screenFrames[index],
-                        mainScreenHeight: mainScreenHeight
+                        mainScreenHeight: mainScreenHeight,
+                        cursorWindowID: cursorWindowID
                     )
                 }
             }
@@ -187,7 +215,7 @@ class FreezeScreenModule: Module {
                 defer: false
             )
             
-            window.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.overlayWindow)) - 1)
+            window.level = FreezeScreenModule.overlayWindowLevel()
             
             let contentView = NSView(frame: NSRect(origin: .zero, size: screenFrame.size))
             let imageView = NSImageView(frame: contentView.bounds)

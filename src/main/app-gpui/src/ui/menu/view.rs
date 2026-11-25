@@ -83,6 +83,10 @@ impl MenuView {
         self
     }
 
+    pub fn exit_handle(&self) -> Rc<Cell<bool>> {
+        self.exiting.clone()
+    }
+
     pub fn max_height(mut self, height: Pixels) -> Self {
         self.max_height = Some(height);
         self
@@ -100,6 +104,8 @@ impl Render for MenuView {
         let indicators = entries.clone();
         let dismiss = self.on_dismiss.clone();
         let compact = self.compact;
+        let exiting = self.exiting.clone();
+        let action = item_action(entries.clone());
         let mut menu = Menu::new("menu", converted.items)
             .focus_handle(self.focus_handle.clone())
             .animate_entry(self.entrance == MenuEntrance::Overlay)
@@ -107,7 +113,11 @@ impl Render for MenuView {
             .disabled_keys(converted.disabled)
             .selected_keys(converted.selected)
             .on_dismiss(move |_, window, cx| dismiss(window, cx))
-            .on_action(item_action(entries.clone()))
+            .on_action(move |key, window, cx| {
+                if !exiting.get() {
+                    action(key, window, cx);
+                }
+            })
             .item_content(item_content(entries, compact));
         if compact {
             menu = menu.recipe("compact");
@@ -208,6 +218,34 @@ mod tests {
         cx.simulate_keystrokes(window.into(), "enter");
         assert_eq!(selected.get(), 2);
         assert_eq!(dismissed.get(), 1);
+    }
+
+    #[herogpui::test]
+    fn exit_flag_blocks_stale_actions_but_not_the_initial_selection(cx: &mut gpui::TestAppContext) {
+        cx.update(herogpui::init);
+        let selected = Rc::new(Cell::new(0));
+        let action = selected.clone();
+        let window = cx.add_window(|window, cx| {
+            let menu = MenuView::new(
+                vec![MenuEntry::Item(
+                    MenuItem::new("Action").on_select(move |_, _| action.set(action.get() + 1)),
+                )],
+                Rc::new(|_, _| {}),
+                cx,
+            )
+            .entrance(MenuEntrance::Instant);
+            window.focus(&menu.focus_handle(), cx);
+            menu
+        });
+        cx.refresh().unwrap();
+        cx.run_until_parked();
+        cx.simulate_keystrokes(window.into(), "home enter");
+        assert_eq!(selected.get(), 1);
+
+        let exit = window.update(cx, |menu, _, _| menu.exit_handle()).unwrap();
+        exit.set(true);
+        cx.simulate_keystrokes(window.into(), "home enter");
+        assert_eq!(selected.get(), 1);
     }
 
     #[herogpui::test]

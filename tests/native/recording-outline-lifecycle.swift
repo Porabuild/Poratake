@@ -642,6 +642,21 @@ struct RecordingOutlineLifecycleTest {
     }
 
     static func verifyFreezePrewarm() {
+        precondition(Int(FreezeScreenModule.overlayWindowLevel().rawValue) == Int(CGWindowLevelForKey(.popUpMenuWindow)) - 1)
+        let cursorLevel = Int(CGWindowLevelForKey(.cursorWindow))
+        let cursorEntry: [String: Any] = [
+            kCGWindowNumber as String: 42,
+            kCGWindowLayer as String: cursorLevel,
+            kCGWindowOwnerName as String: "Window Server",
+            kCGWindowName as String: "Cursor",
+        ]
+        precondition(FreezeScreenModule.cursorWindowID(in: [cursorEntry]) == 42)
+        var wrongOwner = cursorEntry
+        wrongOwner[kCGWindowOwnerName as String] = "Poratake"
+        precondition(FreezeScreenModule.cursorWindowID(in: [wrongOwner]) == nil)
+        var wrongLayer = cursorEntry
+        wrongLayer[kCGWindowLayer as String] = cursorLevel - 1
+        precondition(FreezeScreenModule.cursorWindowID(in: [wrongLayer]) == nil)
         var captureAttempts = 0
         let denied = FreezeScreenModule.prewarmDisplay(hasAccess: { false }) {
             captureAttempts += 1

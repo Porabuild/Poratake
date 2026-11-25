@@ -8,7 +8,7 @@ upgrade.
 
 | Dependency                           | Source of truth                       | How Poratake consumes it                                                     | Where fixes belong                                                            |
 | ------------------------------------ | ------------------------------------- | ---------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
-| HeroGPUI                             | `github.com/Porabuild/HeroGPUI`       | Exact crates.io pin, currently `herogpui = "=0.15.4"`                        | Fix in HeroGPUI, release it, then bump the pin here                           |
+| HeroGPUI                             | `github.com/Porabuild/HeroGPUI`       | Exact crates.io pin, currently `herogpui = "=0.15.5"`                        | Fix in HeroGPUI, release it, then bump the pin here                           |
 | GPUI framework and platform backends | `vendor/gpui-pre*` in this repository | `[patch.crates-io]` path overrides                                           | Fix in the vendored patchset now; upstream clearly generic fixes to Zed       |
 | Zed GPUI                             | `github.com/zed-industries/zed`       | Not a direct dependency; it is the source snapshot republished as `gpui-pre` | Preferred upstream for generic GPUI framework and platform fixes              |
 | `gpui-pre` crates                    | crates.io publication by `huacnlee`   | Base artifacts used to refresh the vendored copies                           | Not owned by Poratake or Zed; do not assume downstream patches can land there |
@@ -75,7 +75,7 @@ intentional difference must be treated as a patch that has to survive the next
 The active patchset is based on `gpui-pre 0.3.11`, which identifies itself as a
 snapshot of `zed@f816e1f9263e3a8ef63c4baaa02e1441ce1c6038`.
 
-Poratake currently consumes HeroGPUI `0.15.4`, which requires the same GPUI
+Poratake currently consumes HeroGPUI `0.15.5`, which requires the same GPUI
 version. Newer `gpui-pre` releases are not automatically compatible because
 HeroGPUI pins the GPUI version exactly.
 

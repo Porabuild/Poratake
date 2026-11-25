@@ -64,6 +64,7 @@ impl Driver {
 
 pub(super) fn configure_app(cx: &mut gpui::App) {
     cx.set_activation_policy(gpui::ActivationPolicy::Accessory);
+    cx.set_cursor_hide_mode(gpui::CursorHideMode::OnTyping);
 }
 
 pub(super) fn register_dock_window(window_id: gpui::WindowId, cx: &mut gpui::App) {
