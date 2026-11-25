@@ -42,7 +42,6 @@ use herogpui::gpui;
 use crate::editor::annotations::Annotation;
 use crate::editor::background::{self, PreviewState};
 use crate::editor::options::EditorOption;
-use crate::system::desktop;
 use crate::theme::vars::active_theme;
 use crate::ui::icon::icon_element;
 use crate::ui::menu::MenuHandle;
@@ -710,7 +709,7 @@ impl VideoEditorWindow {
                     ),
                 );
                 if reveal {
-                    crate::system::desktop::reveal_in_file_manager(path);
+                    cx.update(|cx| cx.reveal_path(path));
                 }
             }
             let output = result.ok();
@@ -3026,7 +3025,7 @@ impl VideoEditorWindow {
 
     pub fn reveal_project(&mut self, cx: &mut Context<Self>) {
         if let Some(path) = &self.path {
-            desktop::reveal_in_file_manager(path);
+            cx.reveal_path(path);
         }
         cx.notify();
     }
@@ -4783,6 +4782,23 @@ mod keyboard_demo_tests {
                 .expect("load config"),
         );
         cx.update(|cx| crate::state::set_test_state(cx, config));
+    }
+
+    #[herogpui::test]
+    fn reveal_project_uses_the_platform_file_manager(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        test_state(cx, directory.path());
+        let project = directory.path().join("Reveal Me.poratake");
+        let editor = cx.add_window(|_, cx| VideoEditorWindow::new_for_test(None, cx));
+
+        editor
+            .update(cx, |editor, _, cx| {
+                editor.path = Some(project.clone());
+                editor.reveal_project(cx);
+            })
+            .unwrap();
+
+        assert_eq!(cx.revealed_paths(), vec![project]);
     }
 
     #[herogpui::test]
@@ -7062,7 +7078,7 @@ mod keyboard_demo_tests {
         };
         initial_state.export_settings.resolution = "original".into();
         initial_state.export_settings.frame_rate = "10".into();
-        initial_state.export_settings.open_in_finder = false;
+        initial_state.export_settings.open_in_finder = true;
         model::save_state(&recording, &initial_state);
 
         let (editor, cx) = cx.add_window_view(|window, cx| {
@@ -7300,6 +7316,7 @@ mod keyboard_demo_tests {
             assert!(editor.export_completed_at.is_some());
         });
         assert_eq!(&*notifications.borrow(), &["Export Complete"]);
+        assert_eq!(cx.cx.revealed_paths(), vec![output.clone()]);
 
         let exported =
             crate::video::decoder::VideoDecoder::open(&output).expect("decode UI-edited export");

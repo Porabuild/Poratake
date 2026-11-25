@@ -2875,7 +2875,7 @@ impl CapturePreviewWindow {
                                     let path = path.clone();
                                     move |_, cx| {
                                         if !deleting {
-                                            crate::system::desktop::reveal_in_file_manager(&path);
+                                            cx.reveal_path(&path);
                                         }
                                         cx.stop_propagation();
                                     }

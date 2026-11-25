@@ -1642,7 +1642,18 @@ fn open_target(target: impl AsRef<OsStr>) -> Result<()> {
     }
 }
 
+struct ShellItemIdList(*mut windows::Win32::UI::Shell::Common::ITEMIDLIST);
+
+impl Drop for ShellItemIdList {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe { CoTaskMemFree(Some(self.0 as _)) };
+        }
+    }
+}
+
 fn open_target_in_explorer(target: &Path) -> Result<()> {
+    let _apartment = ComApartment::new()?;
     let dir = target.parent().context("No parent folder found")?;
     let desktop = unsafe { SHGetDesktopFolder()? };
 
@@ -1657,6 +1668,7 @@ fn open_target_in_explorer(target: &Path) -> Result<()> {
             std::ptr::null_mut(),
         )?;
     }
+    let dir_item = ShellItemIdList(dir_item);
 
     let mut file_item = std::ptr::null_mut();
     unsafe {
@@ -1669,9 +1681,10 @@ fn open_target_in_explorer(target: &Path) -> Result<()> {
             std::ptr::null_mut(),
         )?;
     }
+    let file_item = ShellItemIdList(file_item);
 
-    let highlight = [file_item as *const _];
-    unsafe { SHOpenFolderAndSelectItems(dir_item as _, Some(&highlight), 0) }.or_else(|err| {
+    let highlight = [file_item.0 as *const _];
+    unsafe { SHOpenFolderAndSelectItems(dir_item.0 as _, Some(&highlight), 0) }.or_else(|err| {
         if err.code().0 == ERROR_FILE_NOT_FOUND.0 as i32 {
             // On some systems, the above call mysteriously fails with "file not
             // found" even though the file is there.  In these cases, ShellExecute()

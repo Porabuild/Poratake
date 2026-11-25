@@ -436,6 +436,11 @@ impl TestAppContext {
         self.test_platform.opened_url.borrow().clone()
     }
 
+    /// All paths revealed through cx.reveal_path() during this test, in order.
+    pub fn revealed_paths(&self) -> Vec<PathBuf> {
+        self.test_platform.revealed_paths.borrow().clone()
+    }
+
     /// Returns the application identity configured during this test.
     pub fn app_identity(&self) -> Option<(SharedString, SharedString)> {
         self.test_platform.app_identity()
