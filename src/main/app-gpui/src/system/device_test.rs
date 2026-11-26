@@ -59,8 +59,16 @@ fn subscribe(daemon: &DaemonHandle) {
     }));
 }
 
-pub fn start_mic_test(daemon: &DaemonHandle, device_id: Option<&str>, device_name: Option<&str>) {
-    if !crate::system::permissions::ensure_access(crate::system::permissions::Device::Microphone) {
+pub fn start_mic_test(
+    daemon: &DaemonHandle,
+    device_id: Option<&str>,
+    device_name: Option<&str>,
+    cx: &mut gpui::App,
+) {
+    if !crate::system::permissions::ensure_access(
+        crate::system::permissions::Device::Microphone,
+        cx,
+    ) {
         return;
     }
     subscribe(daemon);
@@ -91,8 +99,9 @@ pub fn start_camera_test(
     device_id: Option<&str>,
     device_name: Option<&str>,
     flipped: bool,
+    cx: &mut gpui::App,
 ) {
-    if !crate::system::permissions::ensure_access(crate::system::permissions::Device::Camera) {
+    if !crate::system::permissions::ensure_access(crate::system::permissions::Device::Camera, cx) {
         return;
     }
     CAMERA_ACTIVE.store(true, Ordering::Relaxed);

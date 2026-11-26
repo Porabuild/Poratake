@@ -23,6 +23,11 @@ struct TrayFilePickerState {
 
 impl gpui::Global for TrayFilePickerState {}
 
+#[derive(Default)]
+struct TrayHidePrompt(bool);
+
+impl gpui::Global for TrayHidePrompt {}
+
 pub fn dispatch(intent: Intent, tray_rect: Option<TrayRect>, cx: &mut App) {
     if !intent.is_supported() {
         crate::windows::toast::Toast::show(
@@ -442,6 +447,11 @@ fn pick_file(
 }
 
 fn hide_tray_icon(cx: &mut App) {
+    let pending = cx.default_global::<TrayHidePrompt>();
+    if pending.0 {
+        return;
+    }
+    pending.0 = true;
     let title = if cfg!(target_os = "macos") {
         "Hide Menu Bar Icon"
     } else {
@@ -452,22 +462,24 @@ fn hide_tray_icon(cx: &mut App) {
     } else {
         "The app will continue running in the background. To restore the tray icon, launch Poratake again from the Start menu."
     };
-    let confirmed = rfd::MessageDialog::new()
-        .set_level(rfd::MessageLevel::Warning)
-        .set_title(title)
-        .set_description(detail)
-        .set_buttons(rfd::MessageButtons::OkCancelCustom(
-            "Hide Icon".into(),
-            "Cancel".into(),
-        ))
-        .show();
-    if confirmed != rfd::MessageDialogResult::Custom("Hide Icon".into()) {
-        return;
-    }
-
-    let config = crate::state::state(cx).config;
-    config.update(|settings| settings.general.hide_menu_bar_icon = true);
-    crate::state::native(cx).send(crate::system::native::NativeCommand::SetTrayVisible(false));
+    crate::ui::confirmation::present(
+        cx,
+        "tray-hide-confirmation",
+        title,
+        detail,
+        "Hide Icon",
+        crate::ui::confirmation::ConfirmationTone::Primary,
+        move |confirmed, cx| {
+            cx.global_mut::<TrayHidePrompt>().0 = false;
+            if !confirmed {
+                return;
+            }
+            let config = crate::state::state(cx).config;
+            config.update(|settings| settings.general.hide_menu_bar_icon = true);
+            crate::state::native(cx)
+                .send(crate::system::native::NativeCommand::SetTrayVisible(false));
+        },
+    );
 }
 
 #[cfg(all(test, target_os = "macos"))]

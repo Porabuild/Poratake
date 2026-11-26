@@ -436,7 +436,7 @@ pub fn render(
             TooltipPlacement::Bottom,
             reset_name,
             cx,
-            |this, _window, cx| this.confirm_reset(cx),
+            |this, window, cx| this.confirm_reset(window, cx),
         ))
         .child(crate::ui::toolbar::tooltip_button_at(
             icon_button::compact("video-delete", "trash-2", delete_name),

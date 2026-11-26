@@ -58,6 +58,7 @@ pub struct SettingsWindow {
     fields: HashMap<String, Entity<InputState>>,
     recording_shortcut: Option<&'static str>,
     pending_shortcut: Option<String>,
+    path_pick_pending: bool,
     cloud_test: CloudTest,
     cloud_test_error: Option<String>,
     devices: device_cache::DeviceCache,
@@ -91,6 +92,7 @@ impl SettingsWindow {
             fields: HashMap::new(),
             recording_shortcut: None,
             pending_shortcut: None,
+            path_pick_pending: false,
             cloud_test: CloudTest::Idle,
             cloud_test_error: None,
             devices: device_cache::DeviceCache::default(),
@@ -183,19 +185,39 @@ impl SettingsWindow {
         }
     }
 
-    pub fn pick_path(&mut self, kind: PathKind, cx: &mut Context<Self>) {
+    pub fn pick_path(&mut self, kind: PathKind, window: &Window, cx: &mut Context<Self>) {
+        if self.path_pick_pending {
+            return;
+        }
         let title = match kind {
             PathKind::Screenshots => "Choose screenshots folder",
             PathKind::Recordings => "Choose recordings folder",
         };
-        let Some(folder) = rfd::FileDialog::new().set_title(title).pick_folder() else {
-            return;
-        };
-        let path = folder.to_string_lossy().to_string();
-        self.mutate(cx, move |config| match kind {
-            PathKind::Screenshots => config.storage.screenshots_path = path,
-            PathKind::Recordings => config.storage.recordings_path = path,
-        });
+        let current = self.path_for(kind);
+        self.path_pick_pending = true;
+        let dialog = rfd::AsyncFileDialog::new()
+            .set_title(title)
+            .set_parent(window);
+        cx.spawn_in(window, async move |entity, cx| {
+            let folder = dialog.pick_folder().await;
+            let _ = entity.update_in(cx, |this, _window, cx| {
+                this.path_pick_pending = false;
+                let Some(folder) = folder else {
+                    cx.notify();
+                    return;
+                };
+                if this.path_for(kind) != current {
+                    cx.notify();
+                    return;
+                }
+                let path = folder.path().to_string_lossy().to_string();
+                this.mutate(cx, move |config| match kind {
+                    PathKind::Screenshots => config.storage.screenshots_path = path,
+                    PathKind::Recordings => config.storage.recordings_path = path,
+                });
+            });
+        })
+        .detach();
     }
 
     /// `handleReset` writes an empty path, which is what makes the folder fall
@@ -231,7 +253,7 @@ impl SettingsWindow {
         } else {
             let id = self.config.recording.selected_mic_id.clone();
             let name = self.config.recording.selected_mic_name.clone();
-            crate::system::device_test::start_mic_test(&daemon, id.as_deref(), name.as_deref());
+            crate::system::device_test::start_mic_test(&daemon, id.as_deref(), name.as_deref(), cx);
         }
         cx.notify();
     }
@@ -247,6 +269,7 @@ impl SettingsWindow {
                 camera.selected_device_id.as_deref(),
                 camera.selected_device_name.as_deref(),
                 camera.flipped,
+                cx,
             );
         }
         cx.notify();
@@ -1296,6 +1319,52 @@ mod render_tests {
         assert_eq!(store.get().history.max_items, start + 10.);
         cx.simulate_keystrokes("left");
         assert_eq!(store.get().history.max_items, start);
+    }
+
+    #[herogpui::test]
+    fn storage_path_tooltips_keep_distinct_accessibility_ids(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(ConfigStore::load_at(dir.path().join("config.json")).unwrap());
+        store.update(|config| {
+            config.storage.screenshots_path = "/tmp/screenshots".into();
+            config.storage.recordings_path = "/tmp/recordings".into();
+        });
+        cx.update(|cx| crate::state::set_test_state(cx, store.clone()));
+        let (_, cx) = herogpui::test::open_window(cx, |_, cx| {
+            SettingsWindow::new(store, Category::Storage, cx)
+        });
+        cx.activate_test_a11y();
+        cx.refresh().unwrap();
+        cx.run_until_parked();
+
+        let tree = cx.test_a11y_tree().expect("accessibility tree");
+        let bounds = tree
+            .nodes
+            .iter()
+            .find(|(_, node)| node.label() == Some("Choose folder"))
+            .and_then(|(_, node)| node.bounds())
+            .expect("Choose folder bounds");
+        let scale = cx.update(|window, _| window.scale_factor());
+        let center = gpui::point(
+            px(((bounds.x0 + bounds.x1) / 2.0 / f64::from(scale)) as f32),
+            px(((bounds.y0 + bounds.y1) / 2.0 / f64::from(scale)) as f32),
+        );
+        cx.simulate_mouse_move(center, None, gpui::Modifiers::none());
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(1700));
+        cx.refresh().unwrap();
+        cx.run_until_parked();
+
+        let tree = cx.test_a11y_tree().expect("accessibility tree");
+        let tooltips = tree
+            .nodes
+            .iter()
+            .filter(|(_, node)| node.role() == gpui::accesskit::Role::Tooltip)
+            .count();
+        assert_eq!(
+            tooltips, 1,
+            "one trigger must open exactly one tooltip, got {tooltips}"
+        );
     }
 
     #[herogpui::test]

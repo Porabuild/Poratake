@@ -6,6 +6,7 @@ pub mod clipboard;
 pub mod desktop;
 pub mod device_test;
 pub mod devices;
+pub mod dialog;
 pub mod hotkeys;
 #[cfg(target_os = "linux")]
 pub mod linux_session;

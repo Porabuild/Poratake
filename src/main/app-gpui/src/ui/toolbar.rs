@@ -94,8 +94,21 @@ pub fn tooltip_button_at<V: 'static>(
     cx: &mut Context<V>,
     on_click: impl Fn(&mut V, &mut Window, &mut Context<V>) + 'static,
 ) -> AnyElement {
-    Tooltip::new(tooltip)
-        .placement(placement)
+    button_with_tooltip(
+        button,
+        Tooltip::new(tooltip).placement(placement),
+        cx,
+        on_click,
+    )
+}
+
+pub fn button_with_tooltip<V: 'static>(
+    button: Button,
+    tooltip: Tooltip,
+    cx: &mut Context<V>,
+    on_click: impl Fn(&mut V, &mut Window, &mut Context<V>) + 'static,
+) -> AnyElement {
+    tooltip
         .sx(|el| el.flex_shrink_0())
         .child(
             button.on_press(cx.listener(move |this, _event, window, cx| {

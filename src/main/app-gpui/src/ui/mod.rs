@@ -4,6 +4,7 @@ pub mod button;
 pub mod chrome;
 pub mod color_picker;
 pub mod colors;
+pub mod confirmation;
 pub mod focus_reveal;
 pub mod font;
 pub mod icon;

@@ -26,8 +26,60 @@ use crate::editor::tool_options::ToolOptionsState;
 use crate::theme::vars::active_theme;
 use crate::ui::chrome;
 use crate::ui::colors::Tool;
+use crate::ui::confirmation::{self, Confirmation, ConfirmationTone};
 use crate::ui::icon_button;
 use herogpui::components::{Button, InputState, Variant};
+
+fn finish_delete_file(path: &Path, window: &mut Window, cx: &mut App) {
+    let (history_update_error, backup_warning) = match crate::history_store::delete_path(
+        path,
+        crate::history_store::HistoryItemType::Screenshot,
+    ) {
+        crate::history_store::DeleteOutcome::Deleted => (None, None),
+        crate::history_store::DeleteOutcome::DeletedWithBackupWarning(path) => (None, Some(path)),
+        crate::history_store::DeleteOutcome::HistoryPersistenceFailed(error) => (Some(error), None),
+        crate::history_store::DeleteOutcome::SourceDeletionFailed
+        | crate::history_store::DeleteOutcome::HistoryUnavailable
+        | crate::history_store::DeleteOutcome::NotFound => {
+            crate::windows::toast::Toast::show(
+                cx,
+                "Delete failed",
+                "The screenshot could not be deleted",
+            );
+            return;
+        }
+    };
+    let notify = crate::state::state(cx)
+        .config
+        .get()
+        .general
+        .show_deletion_notifications;
+    window.remove_window();
+    if let Some(path) = backup_warning {
+        crate::windows::toast::Toast::show(
+            cx,
+            "History recovery copy remains",
+            format!("Could not remove the saved recovery copy at {path}"),
+        );
+    } else if let Some(error) = history_update_error {
+        crate::windows::toast::Toast::show(
+            cx,
+            "History update failed",
+            format!(
+                "The screenshot was deleted, but its history entry may return after restart: {error}"
+            ),
+        );
+    } else if notify {
+        let name = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default()
+            .to_string();
+        cx.defer(move |cx| {
+            crate::windows::toast::Toast::show(cx, "Screenshot deleted", name);
+        });
+    }
+}
 
 fn report_screenshot_save_failure(cx: &mut App, path: &Path, error: &dyn std::fmt::Display) {
     let message = format!("{}: {error}", path.display());
@@ -457,6 +509,7 @@ pub struct EditorWindow {
     pub is_copied: bool,
     copy_pending: bool,
     pin_pending: bool,
+    confirmation: Option<Confirmation>,
     copy_task: Option<gpui::Task<()>>,
     pub image_width: f32,
     pub image_height: f32,
@@ -672,6 +725,7 @@ impl EditorWindow {
             is_copied: false,
             copy_pending: false,
             pin_pending: false,
+            confirmation: None,
             copy_task: None,
             image_width: width,
             image_height: height,
@@ -3736,6 +3790,16 @@ impl Render for EditorWindow {
                             )),
                     ),
             );
+        let content = div()
+            .relative()
+            .size_full()
+            .child(content)
+            .child(confirmation::render(
+                self.confirmation.as_ref(),
+                "editor-delete-confirmation",
+                window,
+                cx,
+            ));
         crate::ui::window_root::focus_root(content, window, cx)
     }
 }
@@ -4984,75 +5048,30 @@ impl EditorWindow {
 
     /// Deletes the file this editor was opened from, after confirming.
     pub fn delete_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.file_path.is_empty() {
+        if self.file_path.is_empty() || self.confirmation.is_some() {
             return;
         }
-        let confirmed = rfd::MessageDialog::new()
-            .set_level(rfd::MessageLevel::Warning)
-            .set_title("Delete Screenshot")
-            .set_description(format!("Delete {}?", self.file_path))
-            .set_buttons(rfd::MessageButtons::OkCancelCustom(
-                "Delete".into(),
-                "Cancel".into(),
-            ))
-            .show();
-        if confirmed != rfd::MessageDialogResult::Custom("Delete".into()) {
-            return;
-        }
-
-        let path = std::path::PathBuf::from(&self.file_path);
-        let (history_update_error, backup_warning) = match crate::history_store::delete_path(
-            &path,
-            crate::history_store::HistoryItemType::Screenshot,
-        ) {
-            crate::history_store::DeleteOutcome::Deleted => (None, None),
-            crate::history_store::DeleteOutcome::DeletedWithBackupWarning(path) => {
-                (None, Some(path))
-            }
-            crate::history_store::DeleteOutcome::HistoryPersistenceFailed(error) => {
-                (Some(error), None)
-            }
-            crate::history_store::DeleteOutcome::SourceDeletionFailed
-            | crate::history_store::DeleteOutcome::HistoryUnavailable
-            | crate::history_store::DeleteOutcome::NotFound => {
-                crate::windows::toast::Toast::show(
-                    cx,
-                    "Delete failed",
-                    "The screenshot could not be deleted",
-                );
-                return;
-            }
-        };
-        let notify = crate::state::state(cx)
-            .config
-            .get()
-            .general
-            .show_deletion_notifications;
-        window.remove_window();
-        if let Some(path) = backup_warning {
-            crate::windows::toast::Toast::show(
-                cx,
-                "History recovery copy remains",
-                format!("Could not remove the saved recovery copy at {path}"),
-            );
-        } else if let Some(error) = history_update_error {
-            crate::windows::toast::Toast::show(
-                cx,
-                "History update failed",
-                format!(
-                    "The screenshot was deleted, but its history entry may return after restart: {error}"
-                ),
-            );
-        } else if notify {
-            let name = path
-                .file_name()
-                .and_then(|value| value.to_str())
-                .unwrap_or_default()
-                .to_string();
-            cx.defer(move |cx| {
-                crate::windows::toast::Toast::show(cx, "Screenshot deleted", name);
+        let path = self.file_path.clone();
+        let (confirmation, receiver) = Confirmation::new(
+            "Delete Screenshot",
+            format!("Delete {path}?"),
+            "Delete",
+            ConfirmationTone::Danger,
+        );
+        self.confirmation = Some(confirmation);
+        cx.notify();
+        cx.spawn_in(window, async move |entity, cx| {
+            let confirmed = receiver.recv().await.unwrap_or(false);
+            let _ = entity.update_in(cx, |this, window, cx| {
+                this.confirmation = None;
+                cx.notify();
+                if !confirmed || this.file_path != path {
+                    return;
+                }
+                finish_delete_file(Path::new(&path), window, cx);
             });
-        }
+        })
+        .detach();
     }
 
     #[cfg(all(not(test), target_os = "macos", feature = "parity"))]
@@ -7389,5 +7408,71 @@ mod tests {
                 Annotation::Text { text, .. } if text == "one two"
             ));
         });
+    }
+
+    #[herogpui::test]
+    fn delete_file_waits_for_an_explicit_confirmation(cx: &mut gpui::TestAppContext) {
+        const CHILD: &str = "PORATAKE_TEST_EDITOR_DELETE_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let directory = tempfile::tempdir().unwrap();
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "editor::window::tests::delete_file_waits_for_an_explicit_confirmation",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .env("RUST_BACKTRACE", "1")
+                .env(crate::config::store::CONFIG_DIR_ENV, directory.path())
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+
+        let profile = crate::config::store::config_dir();
+        let store = Arc::new(
+            crate::config::store::ConfigStore::load_at(profile.join("config.json")).unwrap(),
+        );
+        cx.update(|cx| crate::state::set_test_state(cx, store));
+        let source = profile.join("Delete Me.png");
+        image::RgbaImage::new(32, 24).save(&source).unwrap();
+        let source_path = source.to_string_lossy().into_owned();
+        let notifications = crate::system::notification::capture_for_test();
+        let (editor, cx) = herogpui::test::open_window(cx, |window, cx| {
+            EditorWindow::from_file(&source_path, window, cx)
+        });
+
+        cx.update(|window, cx| {
+            editor.update(cx, |editor, cx| {
+                editor.delete_file(window, cx);
+                editor.delete_file(window, cx);
+                assert!(editor.confirmation.is_some());
+            });
+        });
+        cx.click("confirmation-cancel");
+        cx.run_until_parked();
+        assert!(source.is_file());
+        cx.update(|_, cx| {
+            editor.update(cx, |editor, _| assert!(editor.confirmation.is_none()));
+        });
+
+        cx.update(|window, cx| {
+            editor.update(cx, |editor, cx| editor.delete_file(window, cx));
+        });
+        let confirm = cx.expect("confirmation-confirm").center();
+        cx.simulate_mouse_move(confirm, None, gpui::Modifiers::none());
+        cx.simulate_mouse_down(confirm, gpui::MouseButton::Left, gpui::Modifiers::none());
+        cx.simulate_mouse_up(confirm, gpui::MouseButton::Left, gpui::Modifiers::none());
+        cx.run_until_parked();
+        assert!(!source.exists());
+        cx.run_until_parked();
+        assert!(cx.windows().is_empty());
+        assert_eq!(&*notifications.borrow(), &["Screenshot deleted"]);
     }
 }
