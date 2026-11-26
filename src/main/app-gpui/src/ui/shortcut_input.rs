@@ -110,18 +110,20 @@ pub fn render_sized<V: ShortcutRecorder>(
     if !value.is_empty() && !recording {
         let clear_name = "Clear shortcut";
         row = row.child(
-            herogpui::components::Tooltip::new(clear_name).child(
-                Button::new(SharedString::from(format!("{id}-clear")))
-                    .variant(Variant::Ghost)
-                    .size(metrics.size)
-                    .is_icon_only(true)
-                    .aria_label(clear_name)
-                    .child(icon_element("x", px(chrome::TOOL_BUTTON_ICON)))
-                    .recipe("muted")
-                    .on_press(cx.listener(move |this, _event, _window, cx| {
-                        apply(this, String::new(), cx);
-                    })),
-            ),
+            herogpui::components::Tooltip::new(clear_name)
+                .id(SharedString::from(format!("{id}-clear-tip")))
+                .child(
+                    Button::new(SharedString::from(format!("{id}-clear")))
+                        .variant(Variant::Ghost)
+                        .size(metrics.size)
+                        .is_icon_only(true)
+                        .aria_label(clear_name)
+                        .child(icon_element("x", px(chrome::TOOL_BUTTON_ICON)))
+                        .recipe("muted")
+                        .on_press(cx.listener(move |this, _event, _window, cx| {
+                            apply(this, String::new(), cx);
+                        })),
+                ),
         );
     }
 

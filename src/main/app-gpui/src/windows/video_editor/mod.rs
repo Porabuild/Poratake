@@ -26,8 +26,8 @@ const VIDEO_EDITOR_MIN_HEIGHT: f32 = 750.0;
 const VIDEO_EDITOR_WORK_AREA_GAP: f32 = 20.0;
 /// Playback pulls one composed frame per tick; the composition is software
 /// rasterized, so this is a preview rate rather than the export frame rate.
-use std::cell::RefCell;
-use std::path::PathBuf;
+use std::cell::{Cell, RefCell};
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
@@ -43,6 +43,7 @@ use crate::editor::annotations::Annotation;
 use crate::editor::background::{self, PreviewState};
 use crate::editor::options::EditorOption;
 use crate::theme::vars::active_theme;
+use crate::ui::confirmation::{self, Confirmation, ConfirmationTone};
 use crate::ui::icon::icon_element;
 use crate::ui::menu::MenuHandle;
 use crate::video::composition::segments as timeline_segments;
@@ -151,6 +152,7 @@ pub struct VideoEditorWindow {
     is_cut_tool_active: bool,
     is_exporting: bool,
     is_file_dialog_open: bool,
+    confirmation: Option<Confirmation>,
     export_progress: f32,
     selected_clip: Option<SharedString>,
     menu: MenuHandle,
@@ -304,12 +306,22 @@ impl VideoEditorWindow {
                     editor.request_audio_sync(cx);
                     editor
                 });
-                Self::guard_close(window, cx, view.downgrade(), || {
-                    rfd::MessageDialog::new()
-                        .set_level(rfd::MessageLevel::Error)
-                        .set_title("Could not close video editor")
-                        .set_description("Finish the open file dialog and check that the recording folder is writable, then try closing again.")
-                        .show();
+                let close_warning = Rc::new(Cell::new(false));
+                Self::guard_close(window, cx, view.downgrade(), move |cx| {
+                    if close_warning.replace(true) {
+                        return;
+                    }
+                    let close_warning = close_warning.clone();
+                    cx.spawn(async move |_| {
+                        crate::system::dialog::alert(
+                            rfd::MessageLevel::Error,
+                            "Could not close video editor",
+                            "Finish the open file dialog and check that the recording folder is writable, then try closing again.",
+                        )
+                        .await;
+                        close_warning.set(false);
+                    })
+                    .detach();
                 });
                 view.update(cx, |editor, cx| {
                     editor.preview_window_hidden = !window.is_visible();
@@ -423,6 +435,7 @@ impl VideoEditorWindow {
             is_cut_tool_active: false,
             is_exporting: false,
             is_file_dialog_open: false,
+            confirmation: None,
             export_progress: 0.0,
             selected_clip: None,
             menu: MenuHandle::new(),
@@ -1420,7 +1433,7 @@ impl VideoEditorWindow {
         window: &Window,
         cx: &App,
         editor: gpui::WeakEntity<Self>,
-        on_failure: impl Fn() + 'static,
+        on_failure: impl Fn(&mut App) + 'static,
     ) {
         window.on_window_should_close(cx, move |window, cx| {
             let (saved, should_report_failure) = editor
@@ -1446,7 +1459,7 @@ impl VideoEditorWindow {
                 crate::system::memory::reclaim_idle_memory();
             }
             if should_report_failure {
-                on_failure();
+                on_failure(cx);
             }
             saved
         });
@@ -1548,19 +1561,31 @@ impl VideoEditorWindow {
         cx.notify();
     }
 
-    pub fn confirm_reset(&mut self, cx: &mut Context<Self>) {
-        let confirmed = rfd::MessageDialog::new()
-            .set_level(rfd::MessageLevel::Warning)
-            .set_title("Reset Video Editor")
-            .set_description("Reset all video editor settings to their defaults?")
-            .set_buttons(rfd::MessageButtons::OkCancelCustom(
-                "Reset".into(),
-                "Cancel".into(),
-            ))
-            .show();
-        if confirmed == rfd::MessageDialogResult::Custom("Reset".into()) {
-            self.reset_state(cx);
+    pub fn confirm_reset(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.confirmation.is_some() {
+            return;
         }
+        let path = self.path.clone();
+        let (confirmation, receiver) = Confirmation::new(
+            "Reset Video Editor",
+            "Reset all video editor settings to their defaults?",
+            "Reset",
+            ConfirmationTone::Danger,
+        );
+        self.confirmation = Some(confirmation);
+        cx.notify();
+        cx.spawn_in(window, async move |entity, cx| {
+            let confirmed = receiver.recv().await.unwrap_or(false);
+            let _ = entity.update_in(cx, |this, _window, cx| {
+                this.confirmation = None;
+                cx.notify();
+                if !confirmed || this.path != path {
+                    return;
+                }
+                this.reset_state(cx);
+            });
+        })
+        .detach();
     }
 
     /// Builds the window without opening one, for the headless render tests.
@@ -3552,77 +3577,35 @@ impl VideoEditorWindow {
             );
             return;
         }
+        if self.confirmation.is_some() {
+            return;
+        }
         let Some(path) = self.path.clone() else {
             return;
         };
-        let confirmed = rfd::MessageDialog::new()
-            .set_level(rfd::MessageLevel::Warning)
-            .set_title("Delete Video")
-            .set_description(format!(
-                "Delete {}? This removes the recording and all of its assets.",
-                model::project_display_name(&path)
-            ))
-            .set_buttons(rfd::MessageButtons::OkCancelCustom(
-                "Delete".into(),
-                "Cancel".into(),
-            ))
-            .show();
-        if confirmed != rfd::MessageDialogResult::Custom("Delete".into()) {
-            return;
-        }
-
-        let (history_update_error, backup_warning) = match crate::history_store::delete_path(
-            &path,
-            crate::history_store::HistoryItemType::Video,
-        ) {
-            crate::history_store::DeleteOutcome::Deleted => (None, None),
-            crate::history_store::DeleteOutcome::DeletedWithBackupWarning(path) => {
-                (None, Some(path))
-            }
-            crate::history_store::DeleteOutcome::HistoryPersistenceFailed(error) => {
-                (Some(error), None)
-            }
-            crate::history_store::DeleteOutcome::SourceDeletionFailed
-            | crate::history_store::DeleteOutcome::HistoryUnavailable
-            | crate::history_store::DeleteOutcome::NotFound => {
-                crate::windows::toast::Toast::show(
-                    cx,
-                    "Delete failed",
-                    "The recording could not be deleted",
-                );
-                return;
-            }
-        };
-        let notify = crate::state::state(cx)
-            .config
-            .get()
-            .general
-            .show_deletion_notifications;
-        window.remove_window();
-        registry::close(RegistryKind::VideoEditor, cx);
-        if let Some(path) = backup_warning {
-            crate::windows::toast::Toast::show(
-                cx,
-                "History recovery copy remains",
-                format!("Could not remove the saved recovery copy at {path}"),
-            );
-        } else if let Some(error) = history_update_error {
-            crate::windows::toast::Toast::show(
-                cx,
-                "History update failed",
-                format!(
-                    "The recording was deleted, but its history entry may return after restart: {error}"
-                ),
-            );
-        } else if notify {
-            cx.defer(|cx| {
-                crate::windows::toast::Toast::show(
-                    cx,
-                    "Video deleted",
-                    "The video has been permanently deleted",
-                );
+        let detail = format!(
+            "Delete {}? This removes the recording and all of its assets.",
+            model::project_display_name(&path)
+        );
+        let (confirmation, receiver) =
+            Confirmation::new("Delete Video", detail, "Delete", ConfirmationTone::Danger);
+        self.confirmation = Some(confirmation);
+        cx.notify();
+        cx.spawn_in(window, async move |entity, cx| {
+            let confirmed = receiver.recv().await.unwrap_or(false);
+            let _ = entity.update_in(cx, |this, window, cx| {
+                this.confirmation = None;
+                cx.notify();
+                if !confirmed {
+                    return;
+                }
+                if this.path.as_ref() != Some(&path) || this.is_exporting {
+                    return;
+                }
+                finish_delete_recording(&path, window, cx);
             });
-        }
+        })
+        .detach();
     }
 
     pub fn update_cursor(
@@ -4373,6 +4356,16 @@ impl Render for VideoEditorWindow {
                 window,
                 cx,
             ));
+        let content = div()
+            .relative()
+            .size_full()
+            .child(content)
+            .child(confirmation::render(
+                self.confirmation.as_ref(),
+                "video-editor-confirmation",
+                window,
+                cx,
+            ));
         if window.focused(cx).is_none() {
             window.focus(&self.focus_handle, cx);
         }
@@ -4440,6 +4433,60 @@ impl VideoEditorWindow {
             ),
         };
         body
+    }
+}
+
+fn finish_delete_recording(path: &Path, window: &mut Window, cx: &mut App) {
+    let (history_update_error, backup_warning) =
+        match crate::history_store::delete_path(path, crate::history_store::HistoryItemType::Video)
+        {
+            crate::history_store::DeleteOutcome::Deleted => (None, None),
+            crate::history_store::DeleteOutcome::DeletedWithBackupWarning(path) => {
+                (None, Some(path))
+            }
+            crate::history_store::DeleteOutcome::HistoryPersistenceFailed(error) => {
+                (Some(error), None)
+            }
+            crate::history_store::DeleteOutcome::SourceDeletionFailed
+            | crate::history_store::DeleteOutcome::HistoryUnavailable
+            | crate::history_store::DeleteOutcome::NotFound => {
+                crate::windows::toast::Toast::show(
+                    cx,
+                    "Delete failed",
+                    "The recording could not be deleted",
+                );
+                return;
+            }
+        };
+    let notify = crate::state::state(cx)
+        .config
+        .get()
+        .general
+        .show_deletion_notifications;
+    window.remove_window();
+    registry::forget(RegistryKind::VideoEditor, cx);
+    if let Some(path) = backup_warning {
+        crate::windows::toast::Toast::show(
+            cx,
+            "History recovery copy remains",
+            format!("Could not remove the saved recovery copy at {path}"),
+        );
+    } else if let Some(error) = history_update_error {
+        crate::windows::toast::Toast::show(
+            cx,
+            "History update failed",
+            format!(
+                "The recording was deleted, but its history entry may return after restart: {error}"
+            ),
+        );
+    } else if notify {
+        cx.defer(|cx| {
+            crate::windows::toast::Toast::show(
+                cx,
+                "Video deleted",
+                "The video has been permanently deleted",
+            );
+        });
     }
 }
 
@@ -4775,6 +4822,7 @@ mod window_geometry_tests {
 mod keyboard_demo_tests {
     use super::*;
     use crate::ui::chrome;
+    use herogpui::test::TestWindowExt;
 
     fn test_state(cx: &mut gpui::TestAppContext, dir: &std::path::Path) {
         let config = Arc::new(
@@ -6180,7 +6228,7 @@ mod keyboard_demo_tests {
             cx.add_window(|_, cx| VideoEditorWindow::new_for_test(Some(project.clone()), cx));
         window
             .update(cx, |editor, window, cx| {
-                VideoEditorWindow::guard_close(window, cx, cx.entity().downgrade(), || {});
+                VideoEditorWindow::guard_close(window, cx, cx.entity().downgrade(), |_| {});
                 editor.commit(cx, |state| state.ui.sidebar_open = false);
             })
             .unwrap();
@@ -6214,7 +6262,7 @@ mod keyboard_demo_tests {
         let failure = reported_failure.clone();
         window
             .update(cx, |editor, window, cx| {
-                VideoEditorWindow::guard_close(window, cx, cx.entity().downgrade(), move || {
+                VideoEditorWindow::guard_close(window, cx, cx.entity().downgrade(), move |_| {
                     failure.store(true, Ordering::SeqCst);
                 });
                 editor.commit(cx, |state| state.ui.sidebar_open = false);
@@ -8227,6 +8275,118 @@ mod keyboard_demo_tests {
             .expect("bundled keyboard sample");
         assert!(path.ends_with("press-1.mp3"));
         assert!(path.is_file());
+    }
+
+    #[herogpui::test]
+    fn delete_recording_waits_for_an_explicit_confirmation(cx: &mut gpui::TestAppContext) {
+        const CHILD: &str = "PORATAKE_TEST_VIDEO_EDITOR_DELETE_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let directory = tempfile::tempdir().unwrap();
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "windows::video_editor::keyboard_demo_tests::delete_recording_waits_for_an_explicit_confirmation",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .env("RUST_BACKTRACE", "1")
+                .env(crate::config::store::CONFIG_DIR_ENV, directory.path())
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+
+        let profile = crate::config::store::config_dir();
+        test_state(cx, &profile);
+
+        let project = profile.join("Delete Me.poratake");
+        std::fs::create_dir(&project).unwrap();
+        let recording = crate::video::project::recording_video_path(&project);
+        std::fs::write(&recording, b"fixture video").unwrap();
+        let window =
+            cx.add_window(|_, cx| VideoEditorWindow::new_for_test(Some(project.clone()), cx));
+
+        window
+            .update(cx, |editor, window, cx| {
+                editor.delete_recording(window, cx);
+                editor.delete_recording(window, cx);
+                assert!(editor.confirmation.is_some());
+            })
+            .unwrap();
+        let mut visual = gpui::VisualTestContext::from_window(window.into(), cx);
+        visual.click("confirmation-cancel");
+        assert!(recording.is_file());
+        window
+            .update(cx, |editor, _, _| assert!(editor.confirmation.is_none()))
+            .unwrap();
+
+        window
+            .update(cx, |editor, window, cx| editor.delete_recording(window, cx))
+            .unwrap();
+        let confirm = visual.expect("confirmation-confirm").center();
+        visual.simulate_mouse_move(confirm, None, gpui::Modifiers::none());
+        visual.simulate_mouse_down(confirm, gpui::MouseButton::Left, gpui::Modifiers::none());
+        visual.simulate_mouse_up(confirm, gpui::MouseButton::Left, gpui::Modifiers::none());
+        assert!(!project.exists());
+        assert!(window.update(cx, |_, _, _| ()).is_err());
+        cx.run_until_parked();
+        cx.add_window(|_, cx| VideoEditorWindow::new_for_test(None, cx))
+            .update(cx, |_, _, _| ())
+            .expect("app remains usable after the editor closes");
+    }
+
+    #[herogpui::test]
+    fn reset_waits_for_an_explicit_confirmation(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        test_state(cx, directory.path());
+        let project = directory.path().join("Reset Me.poratake");
+        std::fs::create_dir(&project).unwrap();
+        let window =
+            cx.add_window(|_, cx| VideoEditorWindow::new_for_test(Some(project.clone()), cx));
+
+        window
+            .update(cx, |editor, window, cx| {
+                editor.state.source_duration = Some(4.0);
+                editor.state.segments = vec![model::Segment::spanning(4.0)];
+                editor.state.zoom_segments = vec![model::ZoomSegment {
+                    id: "keep".into(),
+                    ..Default::default()
+                }];
+                editor.state.ui.sidebar_tab = "export".to_string();
+                editor.confirm_reset(window, cx);
+                editor.confirm_reset(window, cx);
+                editor.delete_recording(window, cx);
+                assert!(editor.confirmation.is_some());
+            })
+            .unwrap();
+        let mut visual = gpui::VisualTestContext::from_window(window.into(), cx);
+        visual.click("confirmation-cancel");
+        window
+            .update(cx, |editor, _, _| {
+                assert!(editor.confirmation.is_none());
+                assert_eq!(editor.state.zoom_segments.len(), 1);
+                assert_eq!(editor.state.ui.sidebar_tab, "export");
+            })
+            .unwrap();
+
+        window
+            .update(cx, |editor, window, cx| editor.confirm_reset(window, cx))
+            .unwrap();
+        assert!(visual.find("confirmation-confirm").is_some());
+        visual.click("confirmation-confirm");
+        window
+            .update(cx, |editor, _, _| {
+                assert!(editor.confirmation.is_none());
+                assert!(editor.state.zoom_segments.is_empty());
+                assert_eq!(editor.state.ui.sidebar_tab, "cursor");
+            })
+            .expect("reset keeps the editor window open");
     }
 
     #[herogpui::test]

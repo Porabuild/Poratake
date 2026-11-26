@@ -1138,12 +1138,19 @@ fn schedule_auto_dismiss(
     dismiss_token: Arc<AtomicU64>,
 ) {
     let preview = crate::state::state(cx).config.get().preview;
-    if !preview.auto_dismiss || preview.auto_dismiss_seconds <= 0.0 {
+    if !preview.auto_dismiss {
         return;
     }
-    let timeout = Duration::from_secs_f64(preview.auto_dismiss_seconds);
+    let Ok(timeout) = Duration::try_from_secs_f64(preview.auto_dismiss_seconds) else {
+        return;
+    };
+    if timeout.is_zero() {
+        return;
+    }
+    let Some(deadline) = cx.background_executor().now().checked_add(timeout) else {
+        return;
+    };
     let generation = dismiss_token.fetch_add(1, Ordering::Relaxed) + 1;
-    let start = cx.background_executor().now();
     cx.spawn(async move |cx| {
         let mut elapsed = false;
         loop {
@@ -1152,7 +1159,7 @@ fn schedule_auto_dismiss(
                 DismissVerdict::Gone => return,
                 _ if !elapsed => {
                     let executor = cx.background_executor();
-                    let remaining = timeout.saturating_sub(executor.now() - start);
+                    let remaining = deadline.saturating_duration_since(executor.now());
                     if !remaining.is_zero() {
                         executor.timer(remaining).await;
                     }
@@ -6239,6 +6246,40 @@ mod tests {
         assert!(
             handle.update(cx, |_, _, _| ()).is_err(),
             "the preview must dismiss after the configured delay"
+        );
+    }
+
+    #[herogpui::test]
+    fn an_out_of_range_dismiss_delay_keeps_the_preview_open(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let config_path = directory.path().join("config.json");
+        std::fs::write(
+            &config_path,
+            r#"{"preview":{"autoDismiss":true,"autoDismissSeconds":1e40}}"#,
+        )
+        .unwrap();
+        let store = Arc::new(crate::config::store::ConfigStore::load_at(config_path).unwrap());
+        assert_eq!(store.get().preview.auto_dismiss_seconds, 1e40);
+        let path = directory.path().join("capture.png");
+        image::RgbaImage::new(20, 20).save(&path).unwrap();
+
+        cx.update(|cx| {
+            crate::state::set_test_state(cx, store);
+            CapturePreviewWindow::open(cx, path);
+        });
+        cx.run_until_parked();
+        cx.executor().advance_clock(Duration::from_secs(60));
+        cx.run_until_parked();
+
+        let window = stack_handle(cx)
+            .unwrap()
+            .downcast::<CapturePreviewWindow>()
+            .unwrap();
+        assert_eq!(
+            window
+                .update(cx, |view, _, _| view.active_preview_count())
+                .unwrap(),
+            1
         );
     }
 

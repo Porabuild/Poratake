@@ -4,7 +4,7 @@ pub enum Device {
     Camera,
 }
 
-pub fn ensure_access(device: Device) -> bool {
+pub fn ensure_access(device: Device, cx: &mut gpui::App) -> bool {
     #[cfg(feature = "parity")]
     if std::env::var_os(crate::ui::parity::daemon_fixture::PROCESS_ENV).is_some() {
         return true;
@@ -12,12 +12,12 @@ pub fn ensure_access(device: Device) -> bool {
 
     #[cfg(windows)]
     if consent_is_denied(read_consent(device).as_deref()) {
-        show_permission_dialog(device);
+        show_permission_dialog(device, cx);
         return false;
     }
 
     #[cfg(not(windows))]
-    let _ = device;
+    let _ = (device, cx);
 
     true
 }
@@ -244,7 +244,13 @@ fn read_consent(device: Device) -> Option<String> {
 }
 
 #[cfg(windows)]
-fn show_permission_dialog(device: Device) {
+fn show_permission_dialog(device: Device, cx: &mut gpui::App) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    static OPEN: AtomicBool = AtomicBool::new(false);
+    if OPEN.swap(true, Ordering::Relaxed) {
+        return;
+    }
     let (title, message, detail) = match device {
         Device::Camera => (
             "Camera Permission Required",
@@ -257,18 +263,26 @@ fn show_permission_dialog(device: Device) {
             "To record with microphone, please allow microphone access in Windows Settings.\n\nGo to: Settings > Privacy & security > Microphone\nEnable access for desktop apps",
         ),
     };
-    let result = rfd::MessageDialog::new()
-        .set_level(rfd::MessageLevel::Error)
-        .set_title(title)
-        .set_description(format!("{message}\n\n{detail}"))
-        .set_buttons(rfd::MessageButtons::OkCancelCustom(
-            "Open Settings".into(),
-            "Cancel".into(),
-        ))
-        .show();
-    if result == rfd::MessageDialogResult::Custom("Open Settings".into()) {
-        crate::system::desktop::open_url(settings_url(device));
-    }
+    let detail = format!("{message}\n\n{detail}");
+    crate::ui::confirmation::present(
+        cx,
+        "permission-confirmation",
+        title,
+        detail,
+        "Open Settings",
+        crate::ui::confirmation::ConfirmationTone::Primary,
+        move |confirmed, cx| {
+            OPEN.store(false, Ordering::Relaxed);
+            if !confirmed {
+                return;
+            }
+            cx.spawn(async move |_| {
+                smol::future::yield_now().await;
+                crate::system::desktop::open_url(settings_url(device));
+            })
+            .detach();
+        },
+    );
 }
 
 #[cfg(test)]

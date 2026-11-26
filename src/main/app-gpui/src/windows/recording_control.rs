@@ -1348,6 +1348,7 @@ impl RecordingControl {
         if enabled
             && !crate::system::permissions::ensure_access(
                 crate::system::permissions::Device::Microphone,
+                cx,
             )
         {
             return false;
@@ -1405,6 +1406,7 @@ impl RecordingControl {
         if enabled
             && !crate::system::permissions::ensure_access(
                 crate::system::permissions::Device::Camera,
+                cx,
             )
         {
             return false;
@@ -2191,6 +2193,7 @@ impl RecordingControl {
                 #[cfg(target_os = "macos")]
                 if crate::system::permissions::ensure_access(
                     crate::system::permissions::Device::Camera,
+                    cx,
                 ) {
                     self.request_pre_recording_camera(Some((id, name)), cx);
                 }
@@ -2610,15 +2613,15 @@ impl RecordingControl {
         }
 
         if result.camera_track_missing {
-            cx.defer(|_| {
-                rfd::MessageDialog::new()
-                    .set_level(rfd::MessageLevel::Warning)
-                    .set_title("Camera recording unavailable")
-                    .set_description(
-                        "The recording was saved, but the camera video could not be saved.",
-                    )
-                    .show();
-            });
+            cx.spawn(async move |_, _| {
+                crate::system::dialog::alert(
+                    rfd::MessageLevel::Warning,
+                    "Camera recording unavailable",
+                    "The recording was saved, but the camera video could not be saved.",
+                )
+                .await;
+            })
+            .detach();
         }
 
         let (history_enabled, max_items, show_preview, recording) = {

@@ -12,7 +12,7 @@ use crate::ui::rows;
 use crate::ui::toolbar;
 use crate::windows::settings::registry::{Control, Item, PathKind};
 use crate::windows::settings::SettingsWindow;
-use herogpui::components::{Button, FieldVariant, Select, Size, Variant};
+use herogpui::components::{Button, FieldVariant, Select, Size, Tooltip, Variant};
 
 /// `SettingsSelect` is `w-40 shrink-0`.
 const CONTROL_WIDTH: f32 = 160.0;
@@ -460,28 +460,28 @@ impl SettingsWindow {
                         "Default location".to_string()
                     }),
             )
-            .child(toolbar::tooltip_button(
+            .child(toolbar::button_with_tooltip(
                 icon_button::tertiary_md_icon(
                     SharedString::from(format!("{}-browse", item.id)),
                     "folder-open",
                     browse_name,
                 ),
-                browse_name,
+                Tooltip::new(browse_name).id(format!("{}-browse-tip", item.id)),
                 cx,
-                move |this, _window, cx| {
-                    this.pick_path(kind, cx);
+                move |this, window, cx| {
+                    this.pick_path(kind, window, cx);
                 },
             ));
         // The reset button only exists while a custom path is set.
         if custom {
             let reset_name = "Reset to default";
-            row = row.child(toolbar::tooltip_button(
+            row = row.child(toolbar::button_with_tooltip(
                 icon_button::tertiary_md_icon(
                     SharedString::from(format!("{}-reset", item.id)),
                     "rotate-ccw",
                     reset_name,
                 ),
-                reset_name,
+                Tooltip::new(reset_name).id(format!("{}-reset-tip", item.id)),
                 cx,
                 move |this, _window, cx| {
                     this.reset_path(kind, cx);
@@ -597,13 +597,13 @@ impl SettingsWindow {
                     .items_center()
                     .gap(px(8.0))
                     .child(div().flex_1().min_w_0().child(field))
-                    .child(toolbar::tooltip_button(
+                    .child(toolbar::button_with_tooltip(
                         icon_button::tertiary_md_icon(
                             "naming-pattern-reset",
                             "rotate-ccw",
                             reset_name,
                         ),
-                        reset_name,
+                        Tooltip::new(reset_name).id("naming-pattern-reset-tip"),
                         cx,
                         |this, _window, cx| {
                             this.reset_naming_pattern(cx);
@@ -667,14 +667,14 @@ impl SettingsWindow {
                     .gap(px(6.0))
                     .child(div().flex_1().child(key_field))
                     .child(div().flex_1().child(value_field))
-                    .child(toolbar::tooltip_button(
+                    .child(toolbar::button_with_tooltip(
                         icon_button::compact_sm(
                             SharedString::from(format!("rest-header-remove-{index}")),
                             "trash-2",
                             remove_name,
                         )
                         .recipe("danger"),
-                        remove_name,
+                        Tooltip::new(remove_name).id(format!("rest-header-remove-{index}-tip")),
                         cx,
                         move |this, _window, cx| {
                             this.remove_rest_header(index, cx);
