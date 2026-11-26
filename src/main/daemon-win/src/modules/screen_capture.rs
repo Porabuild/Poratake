@@ -45,7 +45,7 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::Media::MediaFoundation::{
     IMF2DBuffer, IMFAsyncCallback, IMFAsyncCallback_Impl, IMFAsyncResult, IMFAttributes,
     IMFByteStream, IMFDXGIDeviceManager, IMFSample, IMFSinkWriter, MF_MT_ALL_SAMPLES_INDEPENDENT,
-    MF_MT_FIXED_SIZE_SAMPLES, MF_MT_MPEG2_PROFILE, MF_MT_SAMPLE_SIZE,
+    MF_MT_FIXED_SIZE_SAMPLES, MF_MT_MPEG2_LEVEL, MF_MT_MPEG2_PROFILE, MF_MT_SAMPLE_SIZE,
     MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, MF_SINK_WRITER_D3D_MANAGER, MF_VERSION,
     MFCreateDXGIDeviceManager, MFCreateDXGISurfaceBuffer, MFCreateSinkWriterFromURL,
     MFCreateTrackedSample, MFGetSystemTime, MFSTARTUP_FULL, MFShutdown, MFStartup,
@@ -2071,6 +2071,9 @@ impl MediaFoundationEncoder {
         transfer: Option<Arc<DisplayTransfer>>,
         fitted: bool,
     ) -> Result<Self, RecorderError> {
+        let bitrate = video_bitrate(width, height, frame_rate);
+        let level = h264_level_override(width, height, frame_rate, bitrate)?;
+
         let mut manager = None;
         let mut reset_token = 0;
         unsafe {
@@ -2121,12 +2124,17 @@ impl MediaFoundationEncoder {
             height,
             frame_rate,
             1,
-            Some(video_bitrate(width, height, frame_rate)),
+            Some(bitrate),
         )?;
         unsafe {
             output_type
                 .SetUINT32(&MF_MT_MPEG2_PROFILE, 100)
                 .map_err(mf_attribute_error)?;
+            if let Some(level) = level {
+                output_type
+                    .SetUINT32(&MF_MT_MPEG2_LEVEL, level)
+                    .map_err(mf_attribute_error)?;
+            }
         }
         let stream_index = unsafe { writer.AddStream(&output_type) }.map_err(|error| {
             RecorderError::capture(format!("Failed to add H.264 stream: {error}"))
@@ -2542,6 +2550,94 @@ fn video_bitrate(width: u32, height: u32, frame_rate: u32) -> u32 {
     raw.clamp(50_000_000, 200_000_000) as u32
 }
 
+struct H264LevelLimits {
+    level: u32,
+    max_macroblock_rate: u64,
+    max_frame_macroblocks: u64,
+    max_bitrate: u64,
+}
+
+const H264_AUTO_LEVEL_LIMIT: H264LevelLimits = H264LevelLimits {
+    level: 52,
+    max_macroblock_rate: 2_073_600,
+    max_frame_macroblocks: 36_864,
+    max_bitrate: 300_000_000,
+};
+
+const H264_EXTENDED_LEVELS: [H264LevelLimits; 3] = [
+    H264LevelLimits {
+        level: 60,
+        max_macroblock_rate: 4_177_920,
+        max_frame_macroblocks: 139_264,
+        max_bitrate: 300_000_000,
+    },
+    H264LevelLimits {
+        level: 61,
+        max_macroblock_rate: 8_355_840,
+        max_frame_macroblocks: 139_264,
+        max_bitrate: 600_000_000,
+    },
+    H264LevelLimits {
+        level: 62,
+        max_macroblock_rate: 16_711_680,
+        max_frame_macroblocks: 139_264,
+        max_bitrate: 1_000_000_000,
+    },
+];
+
+fn fits_h264_level(
+    limits: &H264LevelLimits,
+    macroblock_width: u64,
+    macroblock_height: u64,
+    macroblock_rate: u64,
+    bitrate: u64,
+) -> bool {
+    let frame_macroblocks = macroblock_width.saturating_mul(macroblock_height);
+    let dimension_cap = limits.max_frame_macroblocks.saturating_mul(8);
+    macroblock_rate <= limits.max_macroblock_rate
+        && frame_macroblocks <= limits.max_frame_macroblocks
+        && macroblock_width.saturating_mul(macroblock_width) <= dimension_cap
+        && macroblock_height.saturating_mul(macroblock_height) <= dimension_cap
+        && bitrate <= limits.max_bitrate
+}
+
+fn h264_level_override(
+    width: u32,
+    height: u32,
+    frame_rate: u32,
+    bitrate: u32,
+) -> Result<Option<u32>, RecorderError> {
+    let macroblock_width = u64::from(width.div_ceil(16));
+    let macroblock_height = u64::from(height.div_ceil(16));
+    let macroblock_rate = macroblock_width
+        .saturating_mul(macroblock_height)
+        .saturating_mul(u64::from(frame_rate));
+    let bitrate = u64::from(bitrate);
+    if fits_h264_level(
+        &H264_AUTO_LEVEL_LIMIT,
+        macroblock_width,
+        macroblock_height,
+        macroblock_rate,
+        bitrate,
+    ) {
+        return Ok(None);
+    }
+    for limits in H264_EXTENDED_LEVELS {
+        if fits_h264_level(
+            &limits,
+            macroblock_width,
+            macroblock_height,
+            macroblock_rate,
+            bitrate,
+        ) {
+            return Ok(Some(limits.level));
+        }
+    }
+    Err(RecorderError::configuration(format!(
+        "{width}x{height} at {frame_rate} FPS exceeds H.264 encoding limits; record a smaller area or lower the frame rate in recording settings"
+    )))
+}
+
 fn temporary_video_path(output_path: &Path) -> Result<PathBuf, RecorderError> {
     let name = output_path
         .file_name()
@@ -2579,6 +2675,63 @@ mod tests {
     fn requested_frame_rate_is_capped_by_the_recorded_display() {
         assert_eq!(effective_frame_rate(60, 165), 60);
         assert_eq!(effective_frame_rate(240, 165), 165);
+    }
+
+    fn h264_level_for(width: u32, height: u32, frame_rate: u32) -> Option<u32> {
+        h264_level_override(
+            width,
+            height,
+            frame_rate,
+            video_bitrate(width, height, frame_rate),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn h264_level_stays_automatic_within_level_52() {
+        assert_eq!(h264_level_for(1920, 1080, 60), None);
+        assert_eq!(h264_level_for(3440, 1440, 90), None);
+        assert_eq!(h264_level_for(1920, 1080, 240), None);
+    }
+
+    #[test]
+    fn h264_level_rises_with_macroblock_rate() {
+        assert_eq!(h264_level_for(3440, 1440, 120), Some(60));
+        assert_eq!(h264_level_for(3440, 1440, 165), Some(60));
+        assert_eq!(h264_level_for(3440, 1440, 216), Some(61));
+        assert_eq!(h264_level_for(3440, 1440, 240), Some(61));
+        assert_eq!(h264_level_for(3840, 2160, 240), Some(61));
+    }
+
+    #[test]
+    fn h264_level_rises_with_frame_size_alone() {
+        assert_eq!(h264_level_for(4200, 2304, 30), Some(60));
+    }
+
+    #[test]
+    fn h264_level_rises_when_one_dimension_exceeds_the_level_52_cap() {
+        assert_eq!(h264_level_for(8688, 512, 60), None);
+        assert_eq!(h264_level_for(8704, 512, 60), Some(60));
+        assert_eq!(h264_level_for(9000, 800, 60), Some(60));
+    }
+
+    #[test]
+    fn h264_level_rejects_streams_beyond_level_62() {
+        let rate_driven =
+            h264_level_override(7680, 4320, 240, video_bitrate(7680, 4320, 240)).unwrap_err();
+        assert!(
+            rate_driven
+                .message
+                .contains("exceeds H.264 encoding limits")
+        );
+
+        let size_driven =
+            h264_level_override(11520, 4320, 1, video_bitrate(11520, 4320, 1)).unwrap_err();
+        assert!(
+            size_driven
+                .message
+                .contains("exceeds H.264 encoding limits")
+        );
     }
 
     #[test]
