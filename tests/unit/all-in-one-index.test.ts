@@ -600,6 +600,26 @@ describe('all-in-one orchestrator', () => {
       });
     });
 
+    it('prewarms recording controls as soon as record mode is selected', async () => {
+      const { onToolbarAction } = await getToolbarHandler();
+      onToolbarAction({ action: 'select-capture-mode', mode: 'record' });
+
+      expect(mockPrewarmRecordingControl).toHaveBeenCalledTimes(1);
+      expect(mockPrewarmRecorder).toHaveBeenCalledTimes(1);
+      expect(mockPrewarmOverlay).toHaveBeenCalledTimes(1);
+      expect(mockShowPreRecordingControl).not.toHaveBeenCalled();
+    });
+
+    it('does not reconfigure the selection mode when both modes share a target', async () => {
+      const { onToolbarAction } = await getToolbarHandler();
+      onToolbarAction({ action: 'select-capture-mode', mode: 'record' });
+
+      expect(mockSetAreaSelectionMode).not.toHaveBeenCalled();
+      expect(mockSetOverlayToolbar).toHaveBeenLastCalledWith(
+        expect.objectContaining({ activeMode: 'record', activeTarget: 'area' })
+      );
+    });
+
     it('switches the overlay to window picking for the active mode', async () => {
       const { onToolbarAction } = await getToolbarHandler();
       onToolbarAction({ action: 'select-capture-target', target: 'window' });

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const mockShowRecordingControl = vi.fn();
+const mockShowPendingRecordingControl = vi.fn();
 const mockHideRecordingControl = vi.fn();
 const mockHidePreRecordingControl = vi.fn();
 const mockDetachRecordingControl = vi.fn();
@@ -55,6 +56,8 @@ vi.mock('electron', () => ({
 
 vi.mock('@/main/capture/video/recording-control.ts', () => ({
   showRecordingControl: () => mockShowRecordingControl(),
+  showPendingRecordingControl: (...a: unknown[]) =>
+    mockShowPendingRecordingControl(...a),
   hideRecordingControl: () => mockHideRecordingControl(),
   hidePreRecordingControl: (...a: unknown[]) =>
     mockHidePreRecordingControl(...a),
@@ -203,6 +206,35 @@ describe('recording-actions', () => {
       expect(mockShowCameraRecordingWarning).not.toHaveBeenCalled();
     });
 
+    it('hides the recording presentation before native finalization finishes', async () => {
+      let finishStop: (result: {
+        outputPath: string;
+        duration: number;
+      }) => void = () => {};
+      mockStopRecording.mockReturnValueOnce(
+        new Promise(resolve => {
+          finishStop = resolve;
+        })
+      );
+      const m = await import('@/main/capture/video/recording-actions');
+
+      const stopping = m.stopRecordingAction();
+      await vi.waitFor(() =>
+        expect(mockStopRecording).toHaveBeenCalledTimes(1)
+      );
+
+      expect(mockConcealAreaSelectorOverlay).toHaveBeenCalledTimes(1);
+      expect(mockHideCameraPreview).toHaveBeenCalledTimes(1);
+      expect(mockDisableCameraProtection).toHaveBeenCalledTimes(1);
+      expect(mockHideRecordingControl).toHaveBeenCalled();
+
+      finishStop({
+        outputPath: '/p/Rec.poratake/recording.mov',
+        duration: 18,
+      });
+      await stopping;
+    });
+
     it('warns after preserving a recording with no camera track', async () => {
       mockStopRecording.mockResolvedValue({
         outputPath: '/p/Rec.poratake/recording.mov',
@@ -290,6 +322,9 @@ describe('recording-actions', () => {
       const stopping = m.stopRecordingAction();
 
       expect(mockStopRecording).not.toHaveBeenCalled();
+      expect(mockConcealAreaSelectorOverlay).toHaveBeenCalledTimes(1);
+      expect(mockHideCameraPreview).toHaveBeenCalledTimes(1);
+      expect(mockHideRecordingControl).toHaveBeenCalled();
       finishStartup();
       await Promise.all([startup, stopping]);
 
@@ -727,6 +762,36 @@ describe('recording-actions', () => {
       const m = await import('@/main/capture/video/recording-actions');
       await m.startPendingRecording();
       expect(mockStartRecordingWithConfig).toHaveBeenCalled();
+    });
+
+    it('switches to recording controls before native startup finishes', async () => {
+      mockConfirmAreaSelection.mockResolvedValue({
+        status: 'selected',
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 100,
+      });
+      let finishStartup: () => void = () => {};
+      mockStartRecordingWithConfig.mockReturnValueOnce(
+        new Promise<void>(resolve => {
+          finishStartup = resolve;
+        })
+      );
+      const m = await import('@/main/capture/video/recording-actions');
+
+      const starting = m.startPendingRecording();
+      await vi.waitFor(() =>
+        expect(mockStartRecordingWithConfig).toHaveBeenCalledTimes(1)
+      );
+
+      expect(mockShowPendingRecordingControl).toHaveBeenCalledTimes(1);
+      expect(mockShowPendingRecordingControl).toHaveBeenCalledWith(
+        expect.objectContaining({ outputPath: '/p/Rec.poratake/recording.mov' })
+      );
+
+      finishStartup();
+      await starting;
     });
 
     it('caps the configured frame rate at the selected display refresh rate', async () => {

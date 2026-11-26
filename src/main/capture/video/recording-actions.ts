@@ -1,6 +1,7 @@
 import { screen } from 'electron';
 import {
   showRecordingControl,
+  showPendingRecordingControl,
   hideRecordingControl,
   hidePreRecordingControl,
   detachRecordingControlFromOverlay,
@@ -194,19 +195,20 @@ function stopRecordingWhenTargetClosed(): void {
 async function teardownActiveRecordingPresentation(): Promise<void> {
   currentRecordingType = undefined;
   concealAreaSelectorOverlay();
-  await disableCameraContentProtection();
   hideCameraPreview();
-  await hideRecordingControl();
+  await Promise.all([disableCameraContentProtection(), hideRecordingControl()]);
 }
 
 async function stopAndFinalizeRecording(): Promise<string | null> {
+  const recordingType = currentRecordingType;
+  const presentationTeardown = teardownActiveRecordingPresentation();
+
   if (pendingStartAction) {
     await pendingStartAction;
   }
 
   let recordingResult: CompletedRecording | null = null;
   let stopError: Error | null = null;
-  const recordingType = currentRecordingType;
   const outputPath = getCurrentRecordingPath();
 
   try {
@@ -215,7 +217,7 @@ async function stopAndFinalizeRecording(): Promise<string | null> {
     disposeRecordingPreviewPreparation();
     stopError = error instanceof Error ? error : new Error(String(error));
   } finally {
-    await teardownActiveRecordingPresentation();
+    await presentationTeardown;
   }
 
   if (stopError) {
@@ -549,6 +551,8 @@ async function startPendingRecordingInternal(
       iosDeviceName,
     };
 
+    void showPendingRecordingControl(recordingConfig);
+
     if (cameraEnabled) {
       await enableCameraContentProtection();
     }
@@ -607,6 +611,8 @@ export async function cancelPendingRecording(): Promise<void> {
 }
 
 async function deleteActiveRecording(): Promise<void> {
+  const presentationTeardown = teardownActiveRecordingPresentation();
+
   if (pendingStartAction) {
     await pendingStartAction;
   }
@@ -621,7 +627,7 @@ async function deleteActiveRecording(): Promise<void> {
   } catch (error) {
     stopError = error;
   } finally {
-    await teardownActiveRecordingPresentation();
+    await presentationTeardown;
   }
 
   if (currentPath) {

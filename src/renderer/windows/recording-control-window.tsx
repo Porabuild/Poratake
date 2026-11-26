@@ -602,6 +602,7 @@ export default function RecordingControlWindow({
           <>
             <ControlButton
               label={state.isPaused ? 'Resume recording' : 'Pause recording'}
+              disabled={state.isStarting}
               onClick={() => sendAction(state.isPaused ? 'resume' : 'pause')}
             >
               {state.isPaused ? (

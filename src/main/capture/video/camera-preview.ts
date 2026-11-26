@@ -10,6 +10,7 @@ interface CameraPreviewPositionResult {
 let currentSettings: CameraSettings | null = null;
 let isContentProtected = false;
 let ipcHandlersRegistered = false;
+let previewRequestGeneration = 0;
 
 function toNativePosition(position: { x: number; y: number }): {
   x: number;
@@ -28,6 +29,7 @@ function fromNativePosition(position: { x: number; y: number }): {
 export async function showCameraPreview(
   settings: CameraSettings
 ): Promise<void> {
+  const requestGeneration = ++previewRequestGeneration;
   const position = settings.position
     ? toNativePosition(settings.position)
     : undefined;
@@ -45,17 +47,20 @@ export async function showCameraPreview(
         y: position?.y,
       }
     );
+    if (requestGeneration !== previewRequestGeneration) return;
 
     if (isContentProtected) {
       await daemon.call('camera-preview', 'setContentProtection', {
         enabled: true,
       });
+      if (requestGeneration !== previewRequestGeneration) return;
     }
     currentSettings = { ...settings };
     if (result?.position) {
       currentSettings.position = fromNativePosition(result.position);
     }
   } catch (error) {
+    if (requestGeneration !== previewRequestGeneration) return;
     currentSettings = null;
     await daemon.call('camera-preview', 'hide').catch(() => {});
     throw error;
@@ -63,6 +68,7 @@ export async function showCameraPreview(
 }
 
 export function hideCameraPreview(): void {
+  previewRequestGeneration += 1;
   daemon.call('camera-preview', 'hide').catch(error => {
     console.error('Failed to hide camera preview:', error);
   });
