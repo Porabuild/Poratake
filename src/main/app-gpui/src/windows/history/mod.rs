@@ -76,6 +76,7 @@ pub struct HistoryWindow {
     revealing: bool,
     closing: bool,
     opening_screenshot: bool,
+    polishing: bool,
     mutation_status: Option<&'static str>,
     loading: bool,
 }
@@ -103,20 +104,25 @@ impl HistoryWindow {
             revealing: cfg!(windows),
             closing: false,
             opening_screenshot: false,
+            polishing: false,
             mutation_status: None,
             loading: true,
         };
         view.activation = Some(cx.observe_window_activation(window, |this, window, cx| {
-            if this.revealing
-                || this.closing
-                || !should_close_on_blur(window.is_window_active(), this.item_menu_open)
-            {
-                return;
-            }
-            this.close(window, cx);
+            this.close_if_inactive(window, cx);
         }));
         Self::load_items(cx);
         view
+    }
+
+    fn close_if_inactive(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.revealing || self.closing || self.polishing {
+            return;
+        }
+        if !should_close_on_blur(window.is_window_active(), self.item_menu_open) {
+            return;
+        }
+        self.close(window, cx);
     }
 
     #[cfg(feature = "parity")]
@@ -201,10 +207,10 @@ impl HistoryWindow {
                             crate::system::window_surface::reveal(window, true);
                             window.activate_window();
                             window.on_next_frame(move |window, cx| {
-                                settled.update(cx, |this, _cx| this.revealing = false);
-                                if !window.is_window_active() {
-                                    settled.update(cx, |this, cx| this.close(window, cx));
-                                }
+                                settled.update(cx, |this, cx| {
+                                    this.revealing = false;
+                                    this.close_if_inactive(window, cx);
+                                });
                             });
                         });
                     });
@@ -393,7 +399,11 @@ impl HistoryWindow {
     }
 
     pub fn open_index(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
-        if self.closing || self.opening_screenshot || self.mutation_status.is_some() {
+        if self.closing
+            || self.opening_screenshot
+            || self.polishing
+            || self.mutation_status.is_some()
+        {
             return;
         }
         let Some(item) = self.visible().get(index).map(|item| (*item).clone()) else {
@@ -425,6 +435,60 @@ impl HistoryWindow {
         });
     }
 
+    pub fn polish_index(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if self.closing
+            || self.opening_screenshot
+            || self.polishing
+            || self.mutation_status.is_some()
+        {
+            return;
+        }
+        let Some(item) = self.visible().get(index).map(|item| (*item).clone()) else {
+            return;
+        };
+        if item.r#type != HistoryItemType::Screenshot {
+            return;
+        }
+        let Some(preset) = self.store.read(|config| {
+            crate::windows::capture_preview::starred_wallpaper_preset(&config.wallpaper).cloned()
+        }) else {
+            return;
+        };
+        self.polishing = true;
+        cx.notify();
+        let path = PathBuf::from(item.original_path);
+        let scale = window.scale_factor();
+        cx.spawn_in(window, async move |entity, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    crate::windows::capture_preview::prepare_screenshot_copy(
+                        &path,
+                        Some(&preset),
+                        scale,
+                    )
+                })
+                .await;
+            let _ = entity.update_in(cx, |this, window, cx| {
+                this.polishing = false;
+                if this.closing {
+                    return;
+                }
+                match result {
+                    Ok(bytes) => {
+                        crate::system::clipboard::ClipboardService::write_png(cx, bytes);
+                        this.close(window, cx);
+                    }
+                    Err(error) => {
+                        crate::windows::toast::Toast::show(cx, "Copy failed", error);
+                        cx.notify();
+                    }
+                }
+            });
+        })
+        .detach();
+    }
+
     pub fn reveal_index(&mut self, index: usize, cx: &mut Context<Self>) {
         let Some(item) = self.visible().get(index).map(|item| (*item).clone()) else {
             return;
@@ -434,7 +498,11 @@ impl HistoryWindow {
     }
 
     fn can_mutate(&self) -> bool {
-        !self.closing && !self.loading && !self.opening_screenshot && self.mutation_status.is_none()
+        !self.closing
+            && !self.loading
+            && !self.opening_screenshot
+            && !self.polishing
+            && self.mutation_status.is_none()
     }
 
     pub fn delete_index(&mut self, index: usize, cx: &mut Context<Self>) {
@@ -721,6 +789,9 @@ impl Render for HistoryWindow {
             self.scroll.scroll_to_item(self.selected_index);
         }
         let visible = self.visible();
+        let polish_available = self.store.read(|config| {
+            crate::windows::capture_preview::starred_wallpaper_preset(&config.wallpaper).is_some()
+        });
         let (columns, card_width) = grid_layout(window);
         let hovered_id = if window.is_window_hovered() {
             self.hovered_id.as_deref()
@@ -788,6 +859,8 @@ impl Render for HistoryWindow {
                     thumbnail: media.thumbnail,
                     features: media.features,
                     now_ms: self.now_ms,
+                    polish_available: polish_available
+                        && entry.r#type == HistoryItemType::Screenshot,
                     theme: &theme,
                 };
                 scroller = scroller.child(match self.layout {
@@ -832,20 +905,28 @@ impl Render for HistoryWindow {
             .bg(background)
             .text_color(theme.foreground)
             .child(toolbar::header(has_items, columns == 1, &theme, cx))
-            .children(self.mutation_status.map(|status| {
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
-                    .px(px(crate::ui::chrome::HISTORY_CONTENT_PAD))
-                    .text_size(px(crate::ui::chrome::TEXT_SM))
-                    .text_color(theme.muted_foreground)
-                    .child(crate::ui::icon::spinner_element(
-                        "history-mutation",
-                        px(14.),
-                    ))
-                    .child(status)
-            }))
+            .children(
+                if self.polishing {
+                    Some("Polishing…")
+                } else {
+                    self.mutation_status
+                }
+                .map(|status| {
+                    div()
+                        .debug_selector(|| "history-status".to_string())
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .px(px(crate::ui::chrome::HISTORY_CONTENT_PAD))
+                        .text_size(px(crate::ui::chrome::TEXT_SM))
+                        .text_color(theme.muted_foreground)
+                        .child(crate::ui::icon::spinner_element(
+                            "history-mutation",
+                            px(14.),
+                        ))
+                        .child(status)
+                }),
+            )
             .when(has_items, |el| {
                 el.child(toolbar::toolbar(
                     self.filter,
@@ -1039,6 +1120,425 @@ mod tests {
         });
     }
 
+    fn set_polish_preset(store: &ConfigStore) {
+        store.update(|settings| {
+            settings.wallpaper.presets = vec![serde_json::from_value(serde_json::json!({
+                "id": "starred", "name": "Starred", "padding": 20,
+                "corners": 12, "shadow": 0,
+            }))
+            .unwrap()];
+            settings.wallpaper.default_preset_id = Some("starred".into());
+        });
+    }
+
+    #[herogpui::test]
+    fn history_polish_copies_starred_screenshot_after_blur(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(ConfigStore::load_at(directory.path().join("config.json")).unwrap());
+        set_polish_preset(&store);
+        let path = directory.path().join("capture.png");
+        let source = image::RgbaImage::from_pixel(160, 100, image::Rgba([240, 80, 64, 255]));
+        source.save(&path).unwrap();
+        cx.update(|cx| crate::state::set_test_state(cx, store.clone()));
+        let history = cx.add_window(|window, cx| {
+            window.activate_window();
+            window.set_scale_factor(2.0);
+            let mut history = HistoryWindow::new(store.clone(), window, cx);
+            history.loading = false;
+            history.revealing = false;
+            history.filter = HistoryFilter::All;
+            history.items = vec![HistoryItem {
+                id: "capture".into(),
+                timestamp: 1,
+                original_path: path.to_string_lossy().into_owned(),
+                r#type: HistoryItemType::Screenshot,
+                editor_state: None,
+                duration: None,
+            }];
+            history
+        });
+        cx.run_until_parked();
+
+        history
+            .update(cx, |history, window, cx| {
+                assert!(window.is_window_active());
+                history.polish_index(0, window, cx);
+                history.polish_index(0, window, cx);
+                assert!(history.polishing);
+            })
+            .unwrap();
+        let destination = cx.add_window(|window, _| {
+            window.activate_window();
+            gpui::Empty
+        });
+        cx.run_until_parked();
+
+        cx.update(|cx| {
+            assert_eq!(cx.windows(), vec![destination.into()]);
+            let clipboard = crate::system::clipboard::ClipboardService::read_image(cx).unwrap();
+            let copied = image::load_from_memory(&clipboard.bytes)
+                .unwrap()
+                .to_rgba8();
+            assert_eq!(copied.dimensions(), (240, 180));
+            assert_eq!(copied.get_pixel(70, 70).0, [240, 80, 64, 255]);
+        });
+        assert_eq!(
+            image::load_from_memory(&std::fs::read(&path).unwrap())
+                .unwrap()
+                .to_rgba8(),
+            source
+        );
+    }
+
+    #[herogpui::test]
+    fn history_polish_failure_toasts_and_allows_retry(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(ConfigStore::load_at(directory.path().join("config.json")).unwrap());
+        set_polish_preset(&store);
+        let path = directory.path().join("capture.png");
+        let notifications = crate::system::notification::capture_for_test();
+        cx.update(|cx| crate::state::set_test_state(cx, store.clone()));
+        let history = cx.add_window(|window, cx| {
+            window.set_scale_factor(2.0);
+            let mut history = HistoryWindow::new(store.clone(), window, cx);
+            history.loading = false;
+            history.filter = HistoryFilter::All;
+            history.sort_order = HistorySortOrder::Newest;
+            history.items = vec![HistoryItem {
+                id: "capture".into(),
+                timestamp: 1,
+                original_path: path.to_string_lossy().into_owned(),
+                r#type: HistoryItemType::Screenshot,
+                editor_state: None,
+                duration: None,
+            }];
+            history
+        });
+
+        history
+            .update(cx, |history, window, cx| {
+                history.polish_index(0, window, cx)
+            })
+            .unwrap();
+        cx.run_until_parked();
+        cx.read(|cx| assert!(cx.windows().contains(&history.into())));
+        assert_eq!(notifications.borrow().as_slice(), ["Copy failed"]);
+        history
+            .update(cx, |history, _, _| assert!(!history.polishing))
+            .unwrap();
+
+        image::RgbaImage::from_pixel(160, 100, image::Rgba([240, 80, 64, 255]))
+            .save(&path)
+            .unwrap();
+        history
+            .update(cx, |history, window, cx| {
+                history.polish_index(0, window, cx)
+            })
+            .unwrap();
+        cx.run_until_parked();
+        cx.update(|cx| {
+            assert!(!cx.windows().contains(&history.into()));
+            let clipboard = crate::system::clipboard::ClipboardService::read_image(cx).unwrap();
+            let copied = image::load_from_memory(&clipboard.bytes)
+                .unwrap()
+                .to_rgba8();
+            assert_eq!(copied.dimensions(), (240, 180));
+            assert_eq!(copied.get_pixel(70, 70).0, [240, 80, 64, 255]);
+        });
+        assert_eq!(
+            notifications
+                .borrow()
+                .iter()
+                .filter(|title| title.as_str() == "Copy failed")
+                .count(),
+            1
+        );
+    }
+
+    #[herogpui::test]
+    fn history_polish_rejects_videos_and_missing_starred_presets(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(ConfigStore::load_at(directory.path().join("config.json")).unwrap());
+        let path = directory.path().join("capture.png");
+        image::RgbaImage::from_pixel(20, 10, image::Rgba([64, 112, 192, 255]))
+            .save(&path)
+            .unwrap();
+        cx.update(|cx| crate::state::set_test_state(cx, store.clone()));
+        let history = cx.add_window(|window, cx| {
+            let mut history = HistoryWindow::new(store.clone(), window, cx);
+            history.loading = false;
+            history.filter = HistoryFilter::All;
+            history.sort_order = HistorySortOrder::Newest;
+            history.items = vec![HistoryItem {
+                id: "capture".into(),
+                timestamp: 1,
+                original_path: path.to_string_lossy().into_owned(),
+                r#type: HistoryItemType::Screenshot,
+                editor_state: None,
+                duration: None,
+            }];
+            history
+        });
+
+        history
+            .update(cx, |history, window, cx| {
+                history.polish_index(0, window, cx);
+                assert!(!history.polishing);
+            })
+            .unwrap();
+        cx.run_until_parked();
+        cx.read(|cx| assert!(cx.windows().contains(&history.into())));
+
+        set_polish_preset(&store);
+        history
+            .update(cx, |history, window, cx| {
+                history.items[0].r#type = HistoryItemType::Video;
+                history.polish_index(0, window, cx);
+                assert!(!history.polishing);
+            })
+            .unwrap();
+        cx.run_until_parked();
+        cx.read(|cx| assert!(cx.windows().contains(&history.into())));
+    }
+
+    #[herogpui::test]
+    fn history_polish_action_visibility_matches_starred_screenshots(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(ConfigStore::load_at(directory.path().join("config.json")).unwrap());
+        set_polish_preset(&store);
+        let source_path = directory.path().join("capture.png");
+        image::RgbaImage::from_pixel(160, 100, image::Rgba([240, 80, 64, 255]))
+            .save(&source_path)
+            .unwrap();
+        cx.update(|cx| crate::state::set_test_state(cx, store.clone()));
+        let (history, visual) = herogpui::test::open_window(cx, |window, cx| {
+            let focus_handle = cx.focus_handle();
+            window.focus(&focus_handle, cx);
+            HistoryWindow {
+                items: vec![
+                    HistoryItem {
+                        id: "capture".into(),
+                        timestamp: 2,
+                        original_path: source_path.to_string_lossy().into_owned(),
+                        r#type: HistoryItemType::Screenshot,
+                        editor_state: None,
+                        duration: None,
+                    },
+                    HistoryItem {
+                        id: "recording".into(),
+                        timestamp: 1,
+                        original_path: String::new(),
+                        r#type: HistoryItemType::Video,
+                        editor_state: None,
+                        duration: None,
+                    },
+                ],
+                media: HashMap::new(),
+                media_cancel: None,
+                filter: HistoryFilter::All,
+                sort_order: HistorySortOrder::Newest,
+                layout: HistoryLayout::Grid,
+                selected_index: 0,
+                keyboard_navigation: true,
+                hovered_id: None,
+                item_menu_open: false,
+                scroll: ScrollHandle::new(),
+                viewport: None,
+                store: store.clone(),
+                focus_handle,
+                now_ms: 0,
+                activation: None,
+                revealing: false,
+                closing: false,
+                opening_screenshot: false,
+                polishing: false,
+                mutation_status: None,
+                loading: false,
+            }
+        });
+        visual.simulate_scale_factor_change(1.0);
+        visual.simulate_resize(size(px(400.0), px(500.0)));
+        visual.settle();
+        assert!(visual
+            .debug_bounds("history-polish-action-capture")
+            .is_some());
+        assert!(visual
+            .debug_bounds("history-polish-action-recording")
+            .is_none());
+
+        visual.update(|_, cx| {
+            history.update(cx, |history, cx| {
+                history.selected_index = 1;
+                cx.notify();
+            });
+        });
+        visual.settle();
+        assert!(visual
+            .debug_bounds("history-polish-action-capture")
+            .is_none());
+        assert!(visual
+            .debug_bounds("history-polish-action-recording")
+            .is_none());
+
+        visual.update(|_, cx| {
+            history.update(cx, |history, cx| {
+                history.selected_index = 0;
+                cx.notify();
+            });
+        });
+        visual.simulate_resize(size(px(160.0), px(500.0)));
+        visual.settle();
+        assert!(visual
+            .debug_bounds("history-polish-action-capture")
+            .is_none());
+        assert!(visual
+            .debug_bounds("history-grid-actions-capture")
+            .is_some());
+
+        visual.update(|_, cx| {
+            history.update(cx, |history, cx| {
+                history.selected_index = 0;
+                history.layout = HistoryLayout::List;
+                cx.notify();
+            });
+        });
+        visual.simulate_resize(size(px(200.0), px(500.0)));
+        visual.settle();
+        assert!(visual
+            .debug_bounds("history-polish-action-capture")
+            .is_none());
+        assert!(visual.debug_bounds("history-row-actions-capture").is_some());
+        let baseline_label = visual.expect("history-row-label-capture");
+
+        visual.simulate_resize(size(px(320.0), px(500.0)));
+        visual.settle();
+        assert!(visual
+            .debug_bounds("history-polish-action-capture")
+            .is_none());
+        let narrow_label = visual.expect("history-row-label-capture");
+        assert_eq!(
+            narrow_label.size.width, baseline_label.size.width,
+            "320: Screenshot label {narrow_label:?} must match its untruncated baseline {baseline_label:?}"
+        );
+
+        visual.simulate_resize(size(px(400.0), px(500.0)));
+        visual.settle();
+        assert!(visual
+            .debug_bounds("history-polish-action-capture")
+            .is_some());
+        let full_label = visual.expect("history-row-label-capture");
+        assert_eq!(
+            full_label.size.width, baseline_label.size.width,
+            "400: Screenshot label {full_label:?} must match its untruncated baseline {baseline_label:?}"
+        );
+
+        store.update(|settings| settings.wallpaper.default_preset_id = None);
+        visual.update(|_, cx| {
+            history.update(cx, |_, cx| cx.notify());
+        });
+        visual.settle();
+        assert!(visual
+            .debug_bounds("history-polish-action-capture")
+            .is_none());
+
+        set_polish_preset(&store);
+        visual.update(|_, cx| history.update(cx, |_, cx| cx.notify()));
+        let position = visual.expect("history-polish-action-capture").center();
+        visual.simulate_mouse_move(position, None, gpui::Modifiers::none());
+        visual.simulate_click(position, gpui::Modifiers::none());
+        cx.run_until_parked();
+        cx.read(|cx| {
+            assert!(cx.windows().is_empty());
+            let clipboard = crate::system::clipboard::ClipboardService::read_image(cx).unwrap();
+            let copied = image::load_from_memory(&clipboard.bytes).unwrap();
+            assert_eq!((copied.width(), copied.height()), (200, 140));
+        });
+    }
+
+    #[herogpui::test]
+    fn history_polishing_uses_the_progress_row(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(ConfigStore::load_at(directory.path().join("config.json")).unwrap());
+        cx.update(|cx| crate::state::set_test_state(cx, store.clone()));
+        let (history, visual) = herogpui::test::open_window(cx, |window, cx| {
+            let mut history = HistoryWindow::new(store.clone(), window, cx);
+            history.loading = false;
+            history
+        });
+        visual.simulate_resize(size(px(400.0), px(500.0)));
+        visual.settle();
+        assert!(visual.debug_bounds("history-status").is_none());
+
+        visual.update(|_, cx| {
+            history.update(cx, |history, cx| {
+                history.polishing = true;
+                cx.notify();
+            });
+        });
+        visual.settle();
+        assert!(visual.debug_bounds("history-status").is_some());
+
+        visual.update(|_, cx| {
+            history.update(cx, |history, cx| {
+                history.polishing = false;
+                cx.notify();
+            });
+        });
+        visual.settle();
+        assert!(visual.debug_bounds("history-status").is_none());
+    }
+
+    #[herogpui::test]
+    fn history_close_if_inactive_defers_blur_while_revealing_polishing_or_menu_open(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(ConfigStore::load_at(directory.path().join("config.json")).unwrap());
+        cx.update(|cx| crate::state::set_test_state(cx, store.clone()));
+        let (history, visual) = herogpui::test::open_window(cx, |window, cx| {
+            window.activate_window();
+            let mut history = HistoryWindow::new(store.clone(), window, cx);
+            history.loading = false;
+            history
+        });
+        visual.settle();
+        assert!(visual.update(|window, _| window.is_window_active()));
+
+        visual.update(|_, cx| {
+            history.update(cx, |history, _| history.revealing = true);
+        });
+        visual.deactivate_window();
+        visual.settle();
+        assert!(!visual.update(|window, _| window.is_window_active()));
+        assert_eq!(visual.cx.update(|cx| cx.windows().len()), 1);
+
+        visual.update(|window, cx| {
+            history.update(cx, |history, cx| {
+                history.revealing = false;
+                history.polishing = true;
+                history.close_if_inactive(window, cx);
+            });
+        });
+        assert_eq!(visual.cx.update(|cx| cx.windows().len()), 1);
+
+        visual.update(|window, cx| {
+            history.update(cx, |history, cx| {
+                history.polishing = false;
+                history.item_menu_open = true;
+                history.close_if_inactive(window, cx);
+            });
+        });
+        assert_eq!(visual.cx.update(|cx| cx.windows().len()), 1);
+
+        visual.update(|window, cx| {
+            history.update(cx, |history, cx| {
+                history.item_menu_open = false;
+                history.close_if_inactive(window, cx);
+            });
+        });
+        assert_eq!(visual.cx.update(|cx| cx.windows().len()), 0);
+    }
+
     #[herogpui::test]
     fn history_layout_fits_narrow_windows(cx: &mut gpui::TestAppContext) {
         let directory = tempfile::tempdir().unwrap();
@@ -1078,6 +1578,7 @@ mod tests {
                 revealing: false,
                 closing: false,
                 opening_screenshot: false,
+                polishing: false,
                 mutation_status: None,
                 loading: false,
             }
@@ -1589,16 +2090,39 @@ mod tests {
             for scale in [1.0, 1.25, 1.5, 1.75, 2.0] {
                 visual.simulate_scale_factor_change(scale);
                 visual.simulate_resize(size(px(400.0), px(364.0)));
+                visual.update(|_, cx| {
+                    history.update(cx, |history, cx| {
+                        history.selected_index = 0;
+                        cx.notify();
+                    });
+                });
+                let baseline_label = visual.expect("history-row-label-second");
+                visual.update(|_, cx| {
+                    history.update(cx, |history, cx| {
+                        history.selected_index = 1;
+                        cx.notify();
+                    });
+                });
                 let full_label = visual.expect("history-row-label-second");
                 assert_eq!(visual.update(|window, _| window.scale_factor()), scale);
+                assert_eq!(
+                    full_label.size.width, baseline_label.size.width,
+                    "width 400, scale {scale}: Screenshot label {full_label:?} must match its untruncated baseline {baseline_label:?}"
+                );
                 for width in [140.0, 148.0, 200.0, 240.0, 280.0, 300.0, 319.0, 320.0] {
                     visual.simulate_resize(size(px(width), px(364.0)));
                     let narrow_label = visual.expect("history-row-label-second");
                     assert_eq!(visual.update(|window, _| window.scale_factor()), scale);
                     assert!(
-                        narrow_label.size.width >= full_label.size.width,
-                        "width {width}, scale {scale}: narrow label {narrow_label:?} versus full {full_label:?}"
+                        narrow_label.size.width >= baseline_label.size.width,
+                        "width {width}, scale {scale}: narrow label {narrow_label:?} versus baseline {baseline_label:?}"
                     );
+                    if width == 320.0 {
+                        assert_eq!(
+                            narrow_label.size.width, baseline_label.size.width,
+                            "width 320, scale {scale}: Screenshot label {narrow_label:?} must match its untruncated baseline {baseline_label:?}"
+                        );
+                    }
                     if width < 320.0 {
                         let thumb = visual.expect("history-row-thumb-second");
                         let actions = visual.expect("history-row-actions-second");

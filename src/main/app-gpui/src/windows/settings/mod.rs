@@ -812,8 +812,6 @@ fn sidebar(
         .flex_shrink_0()
         .h_full()
         .bg(sidebar_bg)
-        .border_r_1()
-        .border_color(theme.hairline)
         .child(
             crate::ui::window_controls::drag_area("settings-title-drag")
                 .flex()
@@ -846,7 +844,6 @@ fn sidebar(
                     .items_center()
                     .rounded(px(chrome::RADIUS_3XL))
                     .h(px(SIDEBAR_SEARCH_HEIGHT))
-                    .px(px(8.0))
                     .text_color(theme.muted_foreground)
                     .when(search_hovered, |el| el.bg(theme.row_hover))
                     .when(!search_hovered && search_focused, |el| {
@@ -900,15 +897,7 @@ fn sidebar(
                     &window.nav_scroll,
                 )),
         )
-        .child(
-            div()
-                .pt(px(8.0))
-                .pb(px(8.0))
-                // The `<Separator className="mb-2" />` spans the full sidebar
-                // width; only the button groups are inset.
-                .child(herogpui::Separator::new().mb(px(8.0)).into_any_element())
-                .child(footer),
-        )
+        .child(div().pt(px(16.0)).pb(px(8.0)).child(footer))
         .into_any_element()
 }
 

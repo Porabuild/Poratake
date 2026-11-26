@@ -1976,17 +1976,20 @@ fn render_bgra_thumbnail(image: image::RgbaImage) -> Arc<gpui::RenderImage> {
 /// The preset the user starred, which is what `usePolishCopy` looks up via
 /// `wallpaper.defaultPresetId`. `None` -- the default -- means Electron shows no
 /// Polish button either, so neither does this.
-fn starred_preset(cx: &mut App) -> Option<crate::config::schema::WallpaperPreset> {
-    let wallpaper = crate::state::state(cx).config.get().wallpaper;
+pub(crate) fn starred_wallpaper_preset(
+    wallpaper: &crate::config::schema::WallpaperConfig,
+) -> Option<&crate::config::schema::WallpaperPreset> {
     let id = wallpaper.default_preset_id.as_deref()?;
-    wallpaper
-        .presets
-        .iter()
-        .find(|preset| preset.id == id)
-        .cloned()
+    wallpaper.presets.iter().find(|preset| preset.id == id)
 }
 
-fn prepare_screenshot_copy(
+fn starred_preset(cx: &mut App) -> Option<crate::config::schema::WallpaperPreset> {
+    crate::state::state(cx)
+        .config
+        .read(|config| starred_wallpaper_preset(&config.wallpaper).cloned())
+}
+
+pub(crate) fn prepare_screenshot_copy(
     path: &Path,
     polish: Option<&crate::config::schema::WallpaperPreset>,
     scale_factor: f32,

@@ -247,8 +247,8 @@ fn update_section(
     section.into_any_element()
 }
 
-fn separator(_theme: &ThemeVars) -> AnyElement {
-    herogpui::Separator::new().my(px(12.0)).into_any_element()
+fn section_spacing() -> AnyElement {
+    div().h(px(16.0)).into_any_element()
 }
 
 /// `{updateState.releaseNotes && …}`: the "What's New" heading with the notes
@@ -388,9 +388,9 @@ pub fn render(
                     "Capture, annotate, record, edit, and share from one focused workspace on macOS and Windows.",
                 ),
         )
-        .child(separator(theme))
+        .child(section_spacing())
         .child(update_section(theme, update, notes_scroll, cx))
-        .child(separator(theme))
+        .child(section_spacing())
         .child(
             div()
                 .flex()
@@ -444,7 +444,7 @@ pub fn render(
                         .child("Made for people who capture, explain, and share"),
                 ),
         )
-        .child(separator(theme))
+        .child(section_spacing())
         .child(notices)
         .child(
             div()

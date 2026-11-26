@@ -23,6 +23,7 @@ const LIST_COMPACT_WIDTH: f32 = 320.0;
 const LIST_META_MIN_WIDTH: f32 = 90.0;
 const LIST_ROW_PADDING: f32 = 8.0;
 const LIST_ROW_GAP: f32 = 12.0;
+const LIST_ACTION_WIDTH: f32 = 28.0;
 /// `h-4 w-4` in the grid card, `h-3 w-3` in the list row.
 const GRID_SPINNER: f32 = 16.0;
 const LIST_SPINNER: f32 = 12.0;
@@ -38,6 +39,7 @@ pub struct ItemView<'a> {
     pub thumbnail: Option<PathBuf>,
     pub features: RecordingFeatures,
     pub now_ms: i64,
+    pub polish_available: bool,
     pub theme: &'a ThemeVars,
 }
 
@@ -197,6 +199,31 @@ fn overlay_action(
         .into_any_element()
 }
 
+const POLISH_ICON: &str = "wallpaper";
+
+fn polish_overlay_action(
+    view: &ItemView,
+    index: usize,
+    placement: TooltipPlacement,
+    cx: &mut Context<HistoryWindow>,
+) -> AnyElement {
+    let selector = format!("history-polish-action-{}", view.item.id);
+    div()
+        .debug_selector(move || selector.clone())
+        .child(overlay_action(
+            view.element_id("history-polish"),
+            POLISH_ICON,
+            "Polish",
+            false,
+            placement,
+            move |this, window, cx| {
+                this.polish_index(index, window, cx);
+            },
+            cx,
+        ))
+        .into_any_element()
+}
+
 pub fn grid_card(
     view: &ItemView,
     width: f32,
@@ -306,13 +333,20 @@ pub fn grid_card(
                 .child(format_relative_time(view.item.timestamp, view.now_ms)),
         )
         .when(show_actions, |el| {
-            let actions = div()
+            let inset = if columns == 1 { 8.0 } else { 4.0 };
+            let gap = 4.0;
+            let polish_strip_width = 3.0 * chrome::HISTORY_ITEM_ACTION_SIZE + 2.0 * gap + inset;
+            let mut actions = div()
                 .debug_selector(move || actions_selector.clone())
                 .absolute()
                 .top(px(4.0))
-                .right(px(if columns == 1 { 8.0 } else { 4.0 }))
+                .right(px(inset))
                 .flex()
-                .gap(px(4.0))
+                .gap(px(gap));
+            if view.polish_available && width >= polish_strip_width {
+                actions = actions.child(polish_overlay_action(view, index, tooltip_placement, cx));
+            }
+            let actions = actions
                 .child(overlay_action(
                     view.element_id("history-reveal"),
                     "folder-open",
@@ -520,6 +554,32 @@ pub fn list_row(view: &ItemView, width: f32, cx: &mut Context<HistoryWindow>) ->
         );
 
     if show_actions && !compact {
+        if view.polish_available && width >= LIST_COMPACT_WIDTH + LIST_ROW_GAP + LIST_ACTION_WIDTH {
+            let selector = format!("history-polish-action-{}", view.item.id);
+            row = row.child(
+                div().debug_selector(move || selector.clone()).child(
+                    herogpui::components::Tooltip::new("Polish")
+                        .placement(TooltipPlacement::TopEnd)
+                        .child(
+                            Button::new(view.element_id("history-row-polish"))
+                                .variant(Variant::Ghost)
+                                .is_icon_only(true)
+                                .aria_label("Polish")
+                                .child(icon_element(
+                                    POLISH_ICON,
+                                    px(chrome::HISTORY_ITEM_ACTION_ICON),
+                                ))
+                                .recipe("muted")
+                                .height(px(chrome::HISTORY_ITEM_ACTION_SIZE))
+                                .width(px(LIST_ACTION_WIDTH))
+                                .on_press(cx.listener(move |this, _event, window, cx| {
+                                    cx.stop_propagation();
+                                    this.polish_index(index, window, cx);
+                                })),
+                        ),
+                ),
+            );
+        }
         row = row
             .child(
                 Button::new(view.element_id("history-row-reveal"))
@@ -532,7 +592,7 @@ pub fn list_row(view: &ItemView, width: f32, cx: &mut Context<HistoryWindow>) ->
                     ))
                     .recipe("muted")
                     .height(px(chrome::HISTORY_ITEM_ACTION_SIZE))
-                    .width(px(28.0))
+                    .width(px(LIST_ACTION_WIDTH))
                     .on_press(cx.listener(move |this, _event, _window, cx| {
                         cx.stop_propagation();
                         this.reveal_index(index, cx);
@@ -573,7 +633,7 @@ fn with_item_menu(
     crate::ui::menu::context_menu(
         view.element_id("history-item-menu"),
         content,
-        &item_menu_entries(view.index, view.is_video(), entity),
+        &item_menu_entries(view.index, view.is_video(), view.polish_available, entity),
     )
     .on_open_change(move |open, _window, cx| {
         if let Some(entity) = open_state.upgrade() {
@@ -586,6 +646,7 @@ fn with_item_menu(
 fn item_menu_entries(
     index: usize,
     is_video: bool,
+    polish_available: bool,
     entity: WeakEntity<HistoryWindow>,
 ) -> Vec<MenuEntry> {
     let action = |run: fn(&mut HistoryWindow, usize, &mut Window, &mut Context<HistoryWindow>)| {
@@ -607,6 +668,12 @@ fn item_menu_entries(
             .on_select(action(|this, index, window, cx| {
                 this.open_index(index, window, cx)
             })),
+        )
+        .item_when(
+            polish_available,
+            MenuItem::new("Polish").icon(POLISH_ICON).on_select(action(
+                |this, index, window, cx| this.polish_index(index, window, cx),
+            )),
         )
         .item(
             MenuItem::new("Show in Folder")

@@ -689,6 +689,7 @@ impl SettingsWindow {
                 rows::icon_text_button("rest-header-add", "Add header", "plus", 14.0, 8.0)
                     .variant(Variant::Secondary)
                     .recipe("compact")
+                    .recipe("settings-secondary")
                     .on_press(cx.listener(|this, _event, _window, cx| this.add_rest_header(cx))),
             )
             .into_any_element()
@@ -767,6 +768,7 @@ fn device_test_button(
 ) -> Button {
     Button::new(id)
         .variant(Variant::Secondary)
+        .recipe("settings-secondary")
         .size(Size::Sm)
         .label(label)
         .min_width(px(DEVICE_TEST_BUTTON_WIDTH))
