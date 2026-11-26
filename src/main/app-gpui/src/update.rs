@@ -557,12 +557,16 @@ pub fn check(current: &str) -> Status {
         version: latest.to_string(),
         artifact,
         sha512,
-        notes: parsed
-            .get("body")
-            .and_then(serde_json::Value::as_str)
-            .map(release_notes_text)
-            .filter(|notes| !notes.is_empty()),
+        notes: notes_from_release(&parsed),
     }
+}
+
+fn notes_from_release(release: &serde_json::Value) -> Option<String> {
+    release
+        .get("body")
+        .and_then(serde_json::Value::as_str)
+        .map(release_notes_text)
+        .filter(|notes| !notes.is_empty())
 }
 
 /// `releaseNotesToText` in `main/update/release-notes.ts`: the GitHub release
@@ -940,6 +944,38 @@ mod tests {
         assert_eq!(release_notes_text("a\n\n\n\nb"), "a\n\nb");
         assert_eq!(release_notes_text("5 < 10"), "5 < 10");
         assert_eq!(release_notes_text("5 < 10 > 3"), "5 3");
+    }
+
+    #[test]
+    fn notes_come_from_the_release_body() {
+        let release: serde_json::Value =
+            serde_json::from_str(r#"{"tag_name":"v1.2.3","body":"Fixed a bug\nand another"}"#)
+                .unwrap();
+        assert_eq!(
+            notes_from_release(&release).as_deref(),
+            Some("Fixed a bug\nand another")
+        );
+    }
+
+    #[test]
+    fn empty_or_missing_release_bodies_have_no_notes() {
+        for payload in [
+            r#"{"tag_name":"v1.2.3","body":""}"#,
+            r#"{"tag_name":"v1.2.3","body":"  \n  "}"#,
+            r#"{"tag_name":"v1.2.3"}"#,
+        ] {
+            let release: serde_json::Value = serde_json::from_str(payload).unwrap();
+            assert_eq!(notes_from_release(&release), None, "payload: {payload}");
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn embedded_feed_notes_win_without_a_fetch() {
+        assert_eq!(
+            velopack_notes("feed notes", "1.2.3").as_deref(),
+            Some("feed notes")
+        );
     }
 
     #[test]
@@ -1357,6 +1393,25 @@ fn velopack_manager() -> Option<velopack::UpdateManager> {
     velopack::UpdateManager::new(source, None, None).ok()
 }
 
+/// Velopack feeds carry notes only when the packager embedded them, which the
+/// release workflow has never done, so they come from the GitHub release for
+/// the target tag - the same body the non-Windows check reads, and the only
+/// place notes exist for already-published releases. A failed fetch leaves the
+/// update without notes rather than failing the check.
+#[cfg(target_os = "windows")]
+fn velopack_notes(notes_markdown: &str, version: &str) -> Option<String> {
+    let embedded = (!notes_markdown.trim().is_empty()).then(|| notes_markdown.to_string());
+    embedded.or_else(|| fetch_release_notes(version))
+}
+
+#[cfg(target_os = "windows")]
+fn fetch_release_notes(version: &str) -> Option<String> {
+    let url = format!("https://api.github.com/repos/{OWNER}/{REPOSITORY}/releases/tags/v{version}");
+    let payload = fetch_text(&url).ok()?;
+    let release: serde_json::Value = serde_json::from_str(&payload).ok()?;
+    notes_from_release(&release)
+}
+
 #[cfg(target_os = "windows")]
 fn check_velopack() -> Option<Status> {
     let manager = velopack_manager()?;
@@ -1369,8 +1424,7 @@ fn check_velopack() -> Option<Status> {
         }
         Ok(velopack::UpdateCheck::UpdateAvailable(info)) => {
             let release = &info.TargetFullRelease;
-            let notes =
-                (!release.NotesMarkdown.trim().is_empty()).then(|| release.NotesMarkdown.clone());
+            let notes = velopack_notes(&release.NotesMarkdown, &release.Version);
             let status = Status::Available {
                 version: release.Version.clone(),
                 artifact: Artifact {
