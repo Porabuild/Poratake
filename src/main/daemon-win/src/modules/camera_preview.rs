@@ -13,8 +13,8 @@ use poratake_daemon_common::contract::{
 };
 use serde_json::json;
 use std::cell::RefCell;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
@@ -69,21 +69,52 @@ impl Default for CameraConfig {
 
 #[derive(Clone)]
 struct CameraFrame {
-    pixels: Vec<u8>,
+    pixels: Arc<[u8]>,
     width: i32,
     height: i32,
 }
 
-struct CameraRuntime {
+pub(crate) struct CameraRuntime {
     lifecycle: Mutex<CameraLifecycle>,
     capture: Mutex<Option<CaptureSession>>,
     transition: Mutex<()>,
     position: Mutex<Option<(i32, i32)>>,
+    frame: Arc<Mutex<Option<CameraFrame>>>,
+    config: Mutex<CameraConfig>,
+    ownership: Mutex<Option<RecordingOwnership>>,
+    next_token: AtomicU64,
+}
+
+#[derive(Clone, Copy)]
+struct PreviewHandoff {
+    generation: u64,
+    wanted: bool,
+    synced: bool,
+}
+
+struct RecordingOwnership {
+    token: u64,
+    handoff: PreviewHandoff,
+}
+
+pub(crate) struct RecordingPreview {
+    runtime: Arc<CameraRuntime>,
+    token: u64,
+    post_pending: Arc<AtomicBool>,
+}
+
+static SHARED_RUNTIME: OnceLock<Arc<CameraRuntime>> = OnceLock::new();
+
+pub(crate) fn shared_runtime() -> Arc<CameraRuntime> {
+    SHARED_RUNTIME
+        .get_or_init(|| Arc::new(CameraRuntime::new()))
+        .clone()
 }
 
 #[derive(Clone, Copy)]
 struct CameraLifecycle {
     generation: u64,
+    starting: bool,
     running: bool,
     visible: bool,
 }
@@ -132,27 +163,50 @@ fn respond_window_error(request_id: &str, error: CameraWindowError) {
     respond_error(request_id, error.code(), error.message());
 }
 
+fn respond_camera_cancelled(request_id: Option<&str>) {
+    if let Some(request_id) = request_id {
+        respond_error(
+            request_id,
+            "CAMERA_CANCELLED",
+            "Camera preview was replaced",
+        );
+    }
+}
+
 impl CameraRuntime {
     fn new() -> Self {
         Self {
             lifecycle: Mutex::new(CameraLifecycle {
                 generation: 0,
+                starting: false,
                 running: false,
                 visible: false,
             }),
             capture: Mutex::new(None),
             transition: Mutex::new(()),
             position: Mutex::new(None),
+            frame: Arc::new(Mutex::new(None)),
+            config: Mutex::new(CameraConfig::default()),
+            ownership: Mutex::new(None),
+            next_token: AtomicU64::new(1),
         }
     }
 
     fn advance_generation(&self) -> u64 {
+        let Ok(mut ownership) = self.ownership.lock() else {
+            return 0;
+        };
         let Ok(mut lifecycle) = self.lifecycle.lock() else {
             return 0;
         };
         lifecycle.generation = lifecycle.generation.wrapping_add(1);
+        lifecycle.starting = false;
         lifecycle.running = false;
         lifecycle.visible = false;
+        if let Some(ownership) = ownership.as_mut() {
+            ownership.handoff.generation = lifecycle.generation;
+            ownership.handoff.wanted = false;
+        }
         lifecycle.generation
     }
 
@@ -184,6 +238,7 @@ impl CameraRuntime {
         }
         if let Some(running) = running {
             lifecycle.running = running;
+            lifecycle.starting = false;
         }
         if let Some(visible) = visible {
             lifecycle.visible = visible;
@@ -197,6 +252,7 @@ impl CameraRuntime {
             .map(|lifecycle| *lifecycle)
             .unwrap_or(CameraLifecycle {
                 generation: 0,
+                starting: false,
                 running: false,
                 visible: false,
             })
@@ -212,11 +268,326 @@ impl CameraRuntime {
         lifecycle.visible = true;
         true
     }
+
+    fn mark_starting(&self, generation: u64) -> bool {
+        let Ok(mut lifecycle) = self.lifecycle.lock() else {
+            return false;
+        };
+        if lifecycle.generation != generation {
+            return false;
+        }
+        lifecycle.starting = true;
+        lifecycle.running = false;
+        lifecycle.visible = false;
+        true
+    }
+
+    fn frame_slot(&self) -> Arc<Mutex<Option<CameraFrame>>> {
+        self.frame.clone()
+    }
+
+    fn frame(&self) -> Option<CameraFrame> {
+        self.frame.lock().ok().and_then(|frame| frame.clone())
+    }
+
+    fn set_frame(&self, frame: Option<CameraFrame>) {
+        if let Ok(mut current) = self.frame.lock() {
+            *current = frame;
+        }
+    }
+
+    fn remember_config(&self, config: &CameraConfig) {
+        if let Ok(mut stored) = self.config.lock() {
+            *stored = config.clone();
+        }
+    }
+
+    fn config_snapshot(&self) -> CameraConfig {
+        self.config
+            .lock()
+            .map(|config| config.clone())
+            .unwrap_or_default()
+    }
+
+    fn has_capture(&self) -> bool {
+        self.capture
+            .lock()
+            .map(|capture| capture.is_some())
+            .unwrap_or(false)
+    }
+
+    fn recording_owned(&self) -> bool {
+        self.ownership
+            .lock()
+            .map(|ownership| ownership.is_some())
+            .unwrap_or(false)
+    }
+
+    fn stop_standalone_lifecycle(&self, generation: u64) -> bool {
+        let Ok(ownership) = self.ownership.lock() else {
+            return false;
+        };
+        if ownership.is_some() {
+            return false;
+        }
+        let Ok(mut lifecycle) = self.lifecycle.lock() else {
+            return false;
+        };
+        if lifecycle.generation != generation {
+            return false;
+        }
+        lifecycle.starting = false;
+        lifecycle.running = false;
+        lifecycle.visible = false;
+        true
+    }
+
+    fn recording_generation(&self) -> Option<u64> {
+        self.ownership.lock().ok().and_then(|ownership| {
+            ownership
+                .as_ref()
+                .map(|ownership| ownership.handoff.generation)
+        })
+    }
+
+    fn recording_wanted(&self) -> Option<bool> {
+        self.ownership
+            .lock()
+            .ok()
+            .and_then(|ownership| ownership.as_ref().map(|ownership| ownership.handoff.wanted))
+    }
+
+    fn recording_requested(&self, generation: u64) -> bool {
+        self.ownership
+            .lock()
+            .ok()
+            .and_then(|ownership| {
+                ownership.as_ref().map(|ownership| {
+                    ownership.handoff.generation == generation && ownership.handoff.wanted
+                })
+            })
+            .unwrap_or(false)
+    }
+
+    fn request_recording_preview(&self, generation: u64) -> bool {
+        let Ok(mut ownership) = self.ownership.lock() else {
+            return false;
+        };
+        let Some(ownership) = ownership.as_mut() else {
+            return false;
+        };
+        if ownership.handoff.generation != generation {
+            return false;
+        }
+        ownership.handoff.wanted = true;
+        true
+    }
+
+    fn set_recording_wanted(&self, wanted: bool) {
+        if let Ok(mut ownership) = self.ownership.lock()
+            && let Some(ownership) = ownership.as_mut()
+        {
+            ownership.handoff.wanted = wanted;
+        }
+    }
+
+    #[cfg(test)]
+    fn handoff(&self) -> Option<PreviewHandoff> {
+        self.ownership
+            .lock()
+            .ok()
+            .and_then(|ownership| ownership.as_ref().map(|ownership| ownership.handoff))
+    }
+
+    fn release_ownership(&self, token: u64) -> Option<(PreviewHandoff, CameraLifecycle)> {
+        let mut ownership = self.ownership.lock().ok()?;
+        let current = ownership.as_ref()?;
+        if current.token != token {
+            return None;
+        }
+        let handoff = ownership.take()?.handoff;
+        let mut lifecycle = self.lifecycle.lock().ok()?;
+        if lifecycle.generation == handoff.generation {
+            lifecycle.running = false;
+        }
+        Some((handoff, *lifecycle))
+    }
+}
+
+impl PreviewHandoff {
+    fn begin(lifecycle: CameraLifecycle) -> Self {
+        Self {
+            generation: lifecycle.generation,
+            wanted: lifecycle.visible,
+            synced: false,
+        }
+    }
+
+    fn adopt_pending(&mut self, pending_generation: Option<u64>, lifecycle: CameraLifecycle) {
+        if pending_generation == Some(self.generation)
+            && (lifecycle.starting || lifecycle.running || lifecycle.visible)
+        {
+            self.wanted = true;
+        }
+    }
+
+    fn should_restore(self, lifecycle: CameraLifecycle, capture_active: bool) -> bool {
+        !self.synced && self.wanted && !capture_active && lifecycle.generation == self.generation
+    }
+}
+
+impl RecordingPreview {
+    pub(crate) fn acquire() -> Result<Self, String> {
+        Self::acquire_runtime(shared_runtime())
+    }
+
+    fn acquire_runtime(runtime: Arc<CameraRuntime>) -> Result<Self, String> {
+        let transition = runtime
+            .transition
+            .lock()
+            .map_err(|_| "Camera preview state is unavailable".to_string())?;
+        let session = {
+            let ownership = runtime
+                .ownership
+                .lock()
+                .map_err(|_| "Camera preview state is unavailable".to_string())?;
+            if ownership.is_some() {
+                return Err("Camera preview is already used by a recording".to_string());
+            }
+            take_capture(&runtime)
+        };
+        let pending_generation = session.as_ref().map(|session| session.generation);
+        let token = {
+            let mut ownership = runtime
+                .ownership
+                .lock()
+                .map_err(|_| "Camera preview state is unavailable".to_string())?;
+            let mut lifecycle = runtime
+                .lifecycle
+                .lock()
+                .map_err(|_| "Camera preview state is unavailable".to_string())?;
+            let token = runtime.next_token.fetch_add(1, Ordering::AcqRel);
+            let mut handoff = PreviewHandoff::begin(*lifecycle);
+            handoff.adopt_pending(pending_generation, *lifecycle);
+            *ownership = Some(RecordingOwnership { token, handoff });
+            lifecycle.starting = false;
+            lifecycle.running = true;
+            token
+        };
+        if let Some(session) = session {
+            stop_capture_session(session);
+        }
+        drop(transition);
+        Ok(Self {
+            runtime,
+            token,
+            post_pending: Arc::new(AtomicBool::new(false)),
+        })
+    }
+
+    pub(crate) fn publish(&self, pixels: Arc<[u8]>, width: i32, height: i32) {
+        if pixels.is_empty() {
+            return;
+        }
+        {
+            let Ok(ownership) = self.runtime.ownership.lock() else {
+                return;
+            };
+            let Some(ownership) = ownership.as_ref() else {
+                return;
+            };
+            if ownership.token != self.token {
+                return;
+            }
+            let generation = ownership.handoff.generation;
+            let Ok(lifecycle) = self.runtime.lifecycle.lock() else {
+                return;
+            };
+            if lifecycle.generation != generation || !lifecycle.visible {
+                return;
+            }
+            self.runtime.set_frame(Some(CameraFrame {
+                pixels,
+                width,
+                height,
+            }));
+        }
+        if self
+            .post_pending
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return;
+        }
+        let runtime = self.runtime.clone();
+        let token = self.token;
+        let pending = self.post_pending.clone();
+        run_on_ui(move || {
+            pending.store(false, Ordering::Release);
+            post_recording_frame(&runtime, token);
+        });
+    }
+
+    pub(crate) fn mark_started(&self) {
+        if let Ok(mut ownership) = self.runtime.ownership.lock()
+            && let Some(ownership) = ownership.as_mut()
+            && ownership.token == self.token
+        {
+            ownership.handoff.synced = true;
+        }
+    }
+}
+
+fn post_recording_frame(runtime: &Arc<CameraRuntime>, token: u64) {
+    let Ok(ownership) = runtime.ownership.lock() else {
+        return;
+    };
+    let Some(ownership) = ownership.as_ref() else {
+        return;
+    };
+    if ownership.token != token {
+        return;
+    }
+    let generation = ownership.handoff.generation;
+    let Ok(lifecycle) = runtime.lifecycle.lock() else {
+        return;
+    };
+    if lifecycle.generation != generation || !lifecycle.visible {
+        return;
+    }
+    let window = STATE.with(|state| {
+        let state = state.borrow();
+        match &state.runtime {
+            Some(panel) if Arc::ptr_eq(panel, runtime) => state.window,
+            _ => None,
+        }
+    });
+    if let Some(window) = window {
+        unsafe {
+            let _ = PostMessageW(Some(window), WM_CAMERA_FRAME, WPARAM(0), LPARAM(0));
+        }
+    }
+}
+
+impl Drop for RecordingPreview {
+    fn drop(&mut self) {
+        let Ok(_transition) = self.runtime.transition.lock() else {
+            return;
+        };
+        let Some((handoff, lifecycle)) = self.runtime.release_ownership(self.token) else {
+            return;
+        };
+        let capture_active = self.runtime.has_capture();
+        if !handoff.should_restore(lifecycle, capture_active) {
+            return;
+        }
+        let runtime = self.runtime.clone();
+        run_on_ui(move || restore_standalone_preview(&runtime, handoff.generation));
+    }
 }
 
 struct CameraUiState {
     window: Option<HWND>,
-    frame: Option<Arc<Mutex<Option<CameraFrame>>>>,
     runtime: Option<Arc<CameraRuntime>>,
     flipped: bool,
     content_protected: bool,
@@ -225,7 +596,6 @@ struct CameraUiState {
 thread_local! {
     static STATE: RefCell<CameraUiState> = const { RefCell::new(CameraUiState {
         window: None,
-        frame: None,
         runtime: None,
         flipped: false,
         content_protected: false,
@@ -276,11 +646,11 @@ unsafe extern "system" fn wndproc(
 }
 
 fn paint(window: HWND) {
-    let (frame, flipped) = STATE.with(|state| {
+    let (runtime, flipped) = STATE.with(|state| {
         let state = state.borrow();
-        (state.frame.clone(), state.flipped)
+        (state.runtime.clone(), state.flipped)
     });
-    let frame = frame.and_then(|frame| frame.lock().ok().and_then(|frame| frame.clone()));
+    let frame = runtime.and_then(|runtime| runtime.frame());
 
     unsafe {
         let mut paint = PAINTSTRUCT::default();
@@ -415,7 +785,6 @@ fn default_position(size: i32) -> (i32, i32) {
 
 fn create_or_update_window(
     runtime: Arc<CameraRuntime>,
-    frame: Arc<Mutex<Option<CameraFrame>>>,
     x: Option<i32>,
     y: Option<i32>,
     flipped: bool,
@@ -444,7 +813,6 @@ fn create_or_update_window(
         STATE.with(|state| {
             let mut state = state.borrow_mut();
             state.runtime = Some(runtime);
-            state.frame = Some(frame);
             state.flipped = flipped;
             state.content_protected = content_protected;
         });
@@ -465,7 +833,12 @@ fn create_or_update_window(
     let size = scale_for_dpi(TOTAL_SIZE, dpi);
     let position = match (x, y) {
         (Some(x), Some(y)) => (x, y),
-        _ => default_position(size),
+        _ => runtime
+            .position
+            .lock()
+            .ok()
+            .and_then(|position| *position)
+            .unwrap_or_else(|| default_position(size)),
     };
     unsafe {
         let _ = SetWindowPos(
@@ -492,7 +865,6 @@ fn create_or_update_window(
     STATE.with(|state| {
         let mut state = state.borrow_mut();
         state.runtime = Some(runtime);
-        state.frame = Some(frame);
         state.flipped = flipped;
         state.content_protected = content_protected;
         state.window = Some(window);
@@ -533,13 +905,16 @@ fn hide_window_only(runtime: &CameraRuntime, generation: u64) {
     }
 }
 
-fn teardown_window(runtime: &CameraRuntime, generation: u64) -> bool {
-    if !runtime.update_lifecycle(generation, Some(false), Some(false)) {
-        return false;
+fn hide_standalone_window(runtime: &CameraRuntime, generation: u64) {
+    if runtime.recording_wanted() == Some(true) {
+        return;
     }
+    hide_window_only(runtime, generation);
+}
+
+fn destroy_preview_panel(runtime: &CameraRuntime) {
     let window = STATE.with(|state| {
         let mut state = state.borrow_mut();
-        state.frame = None;
         state.runtime = None;
         state.window.take()
     });
@@ -548,10 +923,52 @@ fn teardown_window(runtime: &CameraRuntime, generation: u64) -> bool {
             let _ = DestroyWindow(window);
         }
     }
+    runtime.set_frame(None);
+}
+
+fn hide_recording_panel(runtime: &CameraRuntime, generation: u64) -> bool {
+    if !runtime.update_lifecycle(generation, None, Some(false)) {
+        return false;
+    }
+    runtime.set_recording_wanted(false);
+    destroy_preview_panel(runtime);
+    true
+}
+
+fn teardown_window(runtime: &CameraRuntime, generation: u64) -> bool {
+    if runtime.recording_owned() {
+        if runtime.lifecycle().visible {
+            return false;
+        }
+        return hide_recording_panel(runtime, generation);
+    }
+    if !runtime.update_lifecycle(generation, Some(false), Some(false)) {
+        return false;
+    }
+    destroy_preview_panel(runtime);
     if let Ok(mut position) = runtime.position.lock() {
         *position = None;
     }
     true
+}
+
+fn restore_standalone_preview(runtime: &Arc<CameraRuntime>, generation: u64) {
+    if runtime.recording_owned() || !runtime.is_generation(generation) || runtime.has_capture() {
+        return;
+    }
+    let config = runtime.config_snapshot();
+    let content_protected = STATE.with(|state| state.borrow().content_protected);
+    let window = match create_or_update_window(
+        runtime.clone(),
+        None,
+        None,
+        config.flipped,
+        content_protected,
+    ) {
+        Ok(window) => window,
+        Err(_) => return,
+    };
+    start_capture(config, runtime.clone(), window, generation, None);
 }
 
 fn requested_size(resolution: &str) -> (u32, u32) {
@@ -574,7 +991,8 @@ fn sample_frame(sample: IMFSample, width: i32, height: i32) -> Result<CameraFram
         let _ = unsafe { buffer.Unlock() };
         return Err("Camera returned an empty frame".to_string());
     }
-    let pixels = unsafe { std::slice::from_raw_parts(pointer, length as usize) }.to_vec();
+    let pixels: Arc<[u8]> =
+        Arc::from(unsafe { std::slice::from_raw_parts(pointer, length as usize) });
     let _ = unsafe { buffer.Unlock() };
     Ok(CameraFrame {
         pixels,
@@ -834,6 +1252,43 @@ fn stop_capture_async(
     });
 }
 
+fn show_adopted_preview(runtime: &CameraRuntime, generation: u64, window: HWND) -> bool {
+    if !runtime.recording_requested(generation) {
+        return false;
+    }
+    if !runtime.update_lifecycle(generation, Some(true), None) {
+        return false;
+    }
+    show_window(window, runtime, generation)
+}
+
+fn respond_adopted_preview(
+    runtime: &CameraRuntime,
+    generation: u64,
+    window: HWND,
+    request_id: &Option<String>,
+) {
+    if show_adopted_preview(runtime, generation, window) {
+        if let Some(request_id) = request_id {
+            respond_success(request_id, json!({ "visible": true }));
+        }
+        return;
+    }
+    respond_camera_cancelled(request_id.as_deref());
+}
+
+fn complete_adopted_preview(
+    runtime: Arc<CameraRuntime>,
+    generation: u64,
+    window_value: isize,
+    request_id: Option<String>,
+) {
+    run_on_ui(move || {
+        let window = HWND(window_value as *mut core::ffi::c_void);
+        respond_adopted_preview(&runtime, generation, window, &request_id);
+    });
+}
+
 fn start_capture(
     config: CameraConfig,
     runtime: Arc<CameraRuntime>,
@@ -841,27 +1296,40 @@ fn start_capture(
     generation: u64,
     request_id: Option<String>,
 ) {
-    if !runtime.update_lifecycle(generation, Some(false), Some(false)) {
-        if let Some(request_id) = request_id {
-            respond_error(
-                &request_id,
-                "CAMERA_CANCELLED",
-                "Camera preview was replaced",
-            );
-        }
-        return;
-    }
-    let frame = STATE.with(|state| state.borrow().frame.clone());
-    let Some(frame) = frame else {
+    let Ok(_transition) = runtime.transition.lock() else {
         if let Some(request_id) = request_id {
             respond_error(
                 &request_id,
                 "CAMERA_ERROR",
-                "Camera frame state unavailable",
+                "Camera transition state unavailable",
             );
         }
         return;
     };
+    if runtime.recording_owned() {
+        if runtime.request_recording_preview(generation) {
+            if !runtime.lifecycle().visible {
+                runtime.set_frame(None);
+            }
+            respond_adopted_preview(&runtime, generation, window, &request_id);
+            return;
+        }
+        respond_camera_cancelled(request_id.as_deref());
+        return;
+    }
+    let preserve_frame = runtime.lifecycle().visible;
+    if !runtime.update_lifecycle(generation, Some(false), Some(false)) {
+        respond_camera_cancelled(request_id.as_deref());
+        return;
+    }
+    if !preserve_frame {
+        runtime.set_frame(None);
+    }
+    let frame = runtime.frame_slot();
+    if !runtime.mark_starting(generation) {
+        respond_camera_cancelled(request_id.as_deref());
+        return;
+    }
     let stop = Arc::new(AtomicBool::new(false));
     let interrupt = Arc::new(Mutex::new(None));
     let window_value = window.0 as isize;
@@ -880,30 +1348,41 @@ fn start_capture(
             window_value,
             move |result| match result {
                 Ok(()) => {
+                    if ready_runtime.recording_owned() {
+                        complete_adopted_preview(
+                            ready_runtime.clone(),
+                            generation,
+                            window_value,
+                            request_id,
+                        );
+                        return;
+                    }
                     if ready_stop.load(Ordering::Acquire)
                         || ready_runtime.generation() != generation
                     {
-                        if let Some(request_id) = request_id {
-                            respond_error(
-                                &request_id,
-                                "CAMERA_CANCELLED",
-                                "Camera preview was replaced",
+                        if ready_runtime.recording_owned() {
+                            complete_adopted_preview(
+                                ready_runtime.clone(),
+                                generation,
+                                window_value,
+                                request_id,
                             );
+                            return;
                         }
+                        respond_camera_cancelled(request_id.as_deref());
                         return;
                     }
                     if !ready_runtime.update_lifecycle(generation, Some(true), None) {
-                        if let Some(request_id) = request_id {
-                            respond_error(
-                                &request_id,
-                                "CAMERA_CANCELLED",
-                                "Camera preview was replaced",
-                            );
-                        }
+                        respond_camera_cancelled(request_id.as_deref());
                         return;
                     }
                     let runtime = ready_runtime.clone();
                     run_on_ui(move || {
+                        let window = HWND(window_value as *mut core::ffi::c_void);
+                        if runtime.recording_owned() {
+                            respond_adopted_preview(&runtime, generation, window, &request_id);
+                            return;
+                        }
                         let lifecycle = runtime.lifecycle();
                         if lifecycle.generation != generation || !lifecycle.running {
                             if let Some(request_id) = request_id {
@@ -915,36 +1394,39 @@ fn start_capture(
                             }
                             return;
                         }
-                        let window = HWND(window_value as *mut core::ffi::c_void);
                         if show_window(window, &runtime, generation) {
-                            if let Some(request_id) = request_id {
-                                respond_success(&request_id, json!({ "visible": true }));
+                            if let Some(request_id) = request_id.as_deref() {
+                                respond_success(request_id, json!({ "visible": true }));
                             }
-                        } else if let Some(request_id) = request_id {
-                            respond_error(
-                                &request_id,
-                                "CAMERA_CANCELLED",
-                                "Camera preview was replaced",
-                            );
+                        } else {
+                            respond_camera_cancelled(request_id.as_deref());
                         }
                     });
                 }
                 Err(error) => {
-                    let current =
-                        ready_runtime.update_lifecycle(generation, Some(false), Some(false));
+                    if ready_runtime.recording_owned() {
+                        complete_adopted_preview(
+                            ready_runtime.clone(),
+                            generation,
+                            window_value,
+                            request_id,
+                        );
+                        return;
+                    }
+                    let current = ready_runtime.stop_standalone_lifecycle(generation);
                     if let Some(request_id) = request_id {
                         respond_error(&request_id, "CAMERA_ERROR", &error);
                     }
                     if current {
                         let runtime = ready_runtime.clone();
-                        run_on_ui(move || hide_window_only(&runtime, generation));
+                        run_on_ui(move || hide_standalone_window(&runtime, generation));
                     }
                 }
             },
         );
-        if finished_runtime.update_lifecycle(generation, Some(false), Some(false)) {
+        if finished_runtime.stop_standalone_lifecycle(generation) {
             let runtime = finished_runtime.clone();
-            run_on_ui(move || hide_window_only(&runtime, generation));
+            run_on_ui(move || hide_standalone_window(&runtime, generation));
         }
     });
     let session = CaptureSession {
@@ -976,6 +1458,198 @@ fn start_capture(
     }
 }
 
+fn show_preview_request(
+    runtime: Arc<CameraRuntime>,
+    config: CameraConfig,
+    changed: bool,
+    x: Option<i32>,
+    y: Option<i32>,
+    request_id: String,
+) {
+    if runtime.recording_owned() {
+        show_recording_panel(runtime, config, x, y, request_id);
+        return;
+    }
+    let lifecycle = runtime.lifecycle();
+    let restart = changed || !lifecycle.running;
+    let generation = if restart {
+        runtime.advance_generation()
+    } else {
+        lifecycle.generation
+    };
+    if !runtime.is_generation(generation) {
+        respond_camera_cancelled(Some(&request_id));
+        return;
+    }
+    if !restart {
+        let content_protected = STATE.with(|state| state.borrow().content_protected);
+        let window =
+            match create_or_update_window(runtime.clone(), x, y, config.flipped, content_protected)
+            {
+                Ok(window) => window,
+                Err(error) => {
+                    respond_window_error(&request_id, error);
+                    return;
+                }
+            };
+        if show_window(window, &runtime, generation) {
+            respond_success(&request_id, json!({ "visible": true }));
+        } else {
+            respond_camera_cancelled(Some(&request_id));
+        }
+        return;
+    }
+    hide_standalone_window(&runtime, generation);
+    stop_capture_async(runtime, generation, move |runtime, outcome| match outcome {
+        CaptureTransitionOutcome::Replaced => respond_camera_cancelled(Some(&request_id)),
+        CaptureTransitionOutcome::Failed => respond_error(
+            &request_id,
+            "CAMERA_ERROR",
+            "Camera transition state unavailable",
+        ),
+        CaptureTransitionOutcome::Current => {
+            let content_protected = STATE.with(|state| state.borrow().content_protected);
+            let window = match create_or_update_window(
+                runtime.clone(),
+                x,
+                y,
+                config.flipped,
+                content_protected,
+            ) {
+                Ok(window) => window,
+                Err(error) => {
+                    let _ = teardown_window(&runtime, generation);
+                    respond_window_error(&request_id, error);
+                    return;
+                }
+            };
+            start_capture(config, runtime, window, generation, Some(request_id));
+        }
+    });
+}
+
+fn show_recording_panel(
+    runtime: Arc<CameraRuntime>,
+    config: CameraConfig,
+    x: Option<i32>,
+    y: Option<i32>,
+    request_id: String,
+) {
+    let Some(generation) = runtime.recording_generation() else {
+        show_preview_request(runtime, config, false, x, y, request_id);
+        return;
+    };
+    runtime.set_recording_wanted(true);
+    if !runtime.update_lifecycle(generation, Some(true), None) {
+        respond_camera_cancelled(Some(&request_id));
+        return;
+    }
+    let content_protected = STATE.with(|state| state.borrow().content_protected);
+    let window =
+        match create_or_update_window(runtime.clone(), x, y, config.flipped, content_protected) {
+            Ok(window) => window,
+            Err(error) => {
+                respond_window_error(&request_id, error);
+                return;
+            }
+        };
+    if show_window(window, &runtime, generation) {
+        respond_success(&request_id, json!({ "visible": true }));
+    } else {
+        respond_camera_cancelled(Some(&request_id));
+    }
+}
+
+fn hide_preview_request(runtime: Arc<CameraRuntime>, request_id: String) {
+    let generation = runtime.advance_generation();
+    if runtime.recording_owned() {
+        if hide_recording_panel(&runtime, generation) {
+            respond_success(&request_id, json!({ "visible": false }));
+        } else {
+            respond_camera_cancelled(Some(&request_id));
+        }
+        return;
+    }
+    if !runtime.is_generation(generation) {
+        respond_camera_cancelled(Some(&request_id));
+        return;
+    }
+    hide_window_only(&runtime, generation);
+    stop_capture_async(runtime, generation, move |runtime, outcome| match outcome {
+        CaptureTransitionOutcome::Replaced => respond_camera_cancelled(Some(&request_id)),
+        CaptureTransitionOutcome::Failed => respond_error(
+            &request_id,
+            "CAMERA_ERROR",
+            "Camera transition state unavailable",
+        ),
+        CaptureTransitionOutcome::Current => {
+            if teardown_window(&runtime, generation) {
+                respond_success(&request_id, json!({ "visible": false }));
+            } else {
+                respond_camera_cancelled(Some(&request_id));
+            }
+        }
+    });
+}
+
+fn update_preview_request(
+    runtime: Arc<CameraRuntime>,
+    config: CameraConfig,
+    changed: bool,
+    x: Option<i32>,
+    y: Option<i32>,
+) {
+    if runtime.recording_owned() {
+        if STATE.with(|state| state.borrow().window.is_none()) {
+            return;
+        }
+        let content_protected = STATE.with(|state| state.borrow().content_protected);
+        let _ = create_or_update_window(runtime.clone(), x, y, config.flipped, content_protected);
+        return;
+    }
+    let lifecycle = runtime.lifecycle();
+    let generation = if changed {
+        runtime.advance_generation()
+    } else {
+        lifecycle.generation
+    };
+    if !runtime.is_generation(generation) {
+        return;
+    }
+    if STATE.with(|state| state.borrow().window.is_none()) {
+        return;
+    }
+    if changed {
+        hide_standalone_window(&runtime, generation);
+        stop_capture_async(runtime, generation, move |runtime, outcome| {
+            if !matches!(outcome, CaptureTransitionOutcome::Current) {
+                return;
+            }
+            if STATE.with(|state| state.borrow().window.is_none()) {
+                return;
+            }
+            let content_protected = STATE.with(|state| state.borrow().content_protected);
+            let window = match create_or_update_window(
+                runtime.clone(),
+                x,
+                y,
+                config.flipped,
+                content_protected,
+            ) {
+                Ok(window) => window,
+                Err(_) => {
+                    let _ = teardown_window(&runtime, generation);
+                    return;
+                }
+            };
+            start_capture(config, runtime, window, generation, None);
+        });
+        return;
+    }
+    let content_protected = STATE.with(|state| state.borrow().content_protected);
+    let _ = create_or_update_window(runtime.clone(), x, y, config.flipped, content_protected);
+}
+
 pub struct CameraPreviewModule {
     config: CameraConfig,
     runtime: Arc<CameraRuntime>,
@@ -985,7 +1659,7 @@ impl CameraPreviewModule {
     pub fn new() -> Self {
         Self {
             config: CameraConfig::default(),
-            runtime: Arc::new(CameraRuntime::new()),
+            runtime: shared_runtime(),
         }
     }
 }
@@ -1010,151 +1684,21 @@ impl Module for CameraPreviewModule {
                 let changed = previous.device_id != self.config.device_id
                     || previous.device_name != self.config.device_name
                     || previous.resolution != self.config.resolution;
+                let config = self.config.clone();
+                self.runtime.remember_config(&config);
                 let x = request_params.x;
                 let y = request_params.y;
                 let request_id = request.id.clone();
-                let config = self.config.clone();
                 let runtime = self.runtime.clone();
-                let lifecycle = runtime.lifecycle();
-                let restart = changed || !lifecycle.running;
-                let generation = if restart {
-                    runtime.advance_generation()
-                } else {
-                    lifecycle.generation
-                };
                 run_on_ui(move || {
-                    if !runtime.is_generation(generation) {
-                        respond_error(
-                            &request_id,
-                            "CAMERA_CANCELLED",
-                            "Camera preview was replaced",
-                        );
-                        return;
-                    }
-                    if !restart {
-                        let frame = STATE
-                            .with(|state| state.borrow().frame.clone())
-                            .unwrap_or_else(|| Arc::new(Mutex::new(None)));
-                        let content_protected =
-                            STATE.with(|state| state.borrow().content_protected);
-                        let window = match create_or_update_window(
-                            runtime.clone(),
-                            frame,
-                            x,
-                            y,
-                            config.flipped,
-                            content_protected,
-                        ) {
-                            Ok(window) => window,
-                            Err(error) => {
-                                respond_window_error(&request_id, error);
-                                return;
-                            }
-                        };
-                        if show_window(window, &runtime, generation) {
-                            respond_success(&request_id, json!({ "visible": true }));
-                        } else {
-                            respond_error(
-                                &request_id,
-                                "CAMERA_CANCELLED",
-                                "Camera preview was replaced",
-                            );
-                        }
-                        return;
-                    }
-                    hide_window_only(&runtime, generation);
-                    stop_capture_async(
-                        runtime,
-                        generation,
-                        move |runtime, outcome| match outcome {
-                            CaptureTransitionOutcome::Replaced => {
-                                respond_error(
-                                    &request_id,
-                                    "CAMERA_CANCELLED",
-                                    "Camera preview was replaced",
-                                );
-                            }
-                            CaptureTransitionOutcome::Failed => {
-                                respond_error(
-                                    &request_id,
-                                    "CAMERA_ERROR",
-                                    "Camera transition state unavailable",
-                                );
-                            }
-                            CaptureTransitionOutcome::Current => {
-                                let frame = Arc::new(Mutex::new(None));
-                                let content_protected =
-                                    STATE.with(|state| state.borrow().content_protected);
-                                let window = match create_or_update_window(
-                                    runtime.clone(),
-                                    frame,
-                                    x,
-                                    y,
-                                    config.flipped,
-                                    content_protected,
-                                ) {
-                                    Ok(window) => window,
-                                    Err(error) => {
-                                        let _ = teardown_window(&runtime, generation);
-                                        respond_window_error(&request_id, error);
-                                        return;
-                                    }
-                                };
-                                start_capture(
-                                    config,
-                                    runtime,
-                                    window,
-                                    generation,
-                                    Some(request_id),
-                                );
-                            }
-                        },
-                    );
+                    show_preview_request(runtime, config, changed, x, y, request_id);
                 });
                 Reply::Deferred
             }
             Some(CameraPreviewMethod::Hide) => {
-                let generation = self.runtime.advance_generation();
                 let request_id = request.id.clone();
                 let runtime = self.runtime.clone();
-                run_on_ui(move || {
-                    if !runtime.is_generation(generation) {
-                        respond_error(
-                            &request_id,
-                            "CAMERA_CANCELLED",
-                            "Camera preview was replaced",
-                        );
-                        return;
-                    }
-                    hide_window_only(&runtime, generation);
-                    stop_capture_async(
-                        runtime,
-                        generation,
-                        move |runtime, outcome| match outcome {
-                            CaptureTransitionOutcome::Replaced => respond_error(
-                                &request_id,
-                                "CAMERA_CANCELLED",
-                                "Camera preview was replaced",
-                            ),
-                            CaptureTransitionOutcome::Failed => respond_error(
-                                &request_id,
-                                "CAMERA_ERROR",
-                                "Camera transition state unavailable",
-                            ),
-                            CaptureTransitionOutcome::Current => {
-                                if teardown_window(&runtime, generation) {
-                                    respond_success(&request_id, json!({ "visible": false }));
-                                } else {
-                                    respond_error(
-                                        &request_id,
-                                        "CAMERA_CANCELLED",
-                                        "Camera preview was replaced",
-                                    );
-                                }
-                            }
-                        },
-                    );
-                });
+                run_on_ui(move || hide_preview_request(runtime, request_id));
                 Reply::Deferred
             }
             Some(CameraPreviewMethod::Update) => {
@@ -1181,63 +1725,10 @@ impl Module for CameraPreviewModule {
                 let x = request_params.x;
                 let y = request_params.y;
                 let config = self.config.clone();
+                self.runtime.remember_config(&config);
                 let runtime = self.runtime.clone();
-                let generation = if changed {
-                    runtime.advance_generation()
-                } else {
-                    runtime.generation()
-                };
                 run_on_ui(move || {
-                    if !runtime.is_generation(generation) {
-                        return;
-                    }
-                    if STATE.with(|state| state.borrow().window.is_none()) {
-                        return;
-                    }
-                    if changed {
-                        hide_window_only(&runtime, generation);
-                        stop_capture_async(runtime, generation, move |runtime, outcome| {
-                            if !matches!(outcome, CaptureTransitionOutcome::Current) {
-                                return;
-                            }
-                            if STATE.with(|state| state.borrow().window.is_none()) {
-                                return;
-                            }
-                            let frame = Arc::new(Mutex::new(None));
-                            let content_protected =
-                                STATE.with(|state| state.borrow().content_protected);
-                            let window = match create_or_update_window(
-                                runtime.clone(),
-                                frame,
-                                x,
-                                y,
-                                config.flipped,
-                                content_protected,
-                            ) {
-                                Ok(window) => window,
-                                Err(_) => {
-                                    let _ = teardown_window(&runtime, generation);
-                                    return;
-                                }
-                            };
-                            start_capture(config, runtime, window, generation, None);
-                        });
-                        return;
-                    }
-                    let Some(frame) = STATE.with(|state| state.borrow().frame.clone()) else {
-                        return;
-                    };
-                    let content_protected = STATE.with(|state| state.borrow().content_protected);
-                    let Ok(_) = create_or_update_window(
-                        runtime.clone(),
-                        frame,
-                        x,
-                        y,
-                        config.flipped,
-                        content_protected,
-                    ) else {
-                        return;
-                    };
+                    update_preview_request(runtime, config, changed, x, y);
                 });
                 Reply::Now(Ok(Some(json!({ "updated": true }))))
             }
@@ -1267,5 +1758,223 @@ impl Module for CameraPreviewModule {
             }
             None => method_not_found(&request.method),
         }
+    }
+}
+
+#[cfg(test)]
+mod handoff_tests {
+    use super::*;
+
+    fn live_runtime() -> (Arc<CameraRuntime>, u64) {
+        let runtime = Arc::new(CameraRuntime::new());
+        let generation = runtime.advance_generation();
+        runtime.update_lifecycle(generation, Some(true), Some(true));
+        runtime.set_frame(Some(CameraFrame {
+            pixels: Arc::from(vec![9u8; 16]),
+            width: 2,
+            height: 2,
+        }));
+        (runtime, generation)
+    }
+
+    #[test]
+    fn recording_handoff_keeps_preview_and_retains_frame() {
+        let (runtime, generation) = live_runtime();
+        let preview = RecordingPreview::acquire_runtime(runtime.clone()).expect("handoff");
+
+        let handoff = runtime.handoff().expect("ownership");
+        assert_eq!(handoff.generation, generation);
+        assert!(handoff.should_restore(runtime.lifecycle(), false));
+        assert!(runtime.recording_owned());
+        let lifecycle = runtime.lifecycle();
+        assert!(lifecycle.running);
+        assert!(lifecycle.visible);
+
+        let retained = runtime.frame().expect("retained frame");
+        assert_eq!((retained.width, retained.height), (2, 2));
+        assert_eq!(retained.pixels.len(), 16);
+
+        preview.mark_started();
+        assert!(
+            !runtime
+                .handoff()
+                .expect("ownership")
+                .should_restore(runtime.lifecycle(), false)
+        );
+        drop(preview);
+
+        assert!(!runtime.recording_owned());
+        let lifecycle = runtime.lifecycle();
+        assert!(!lifecycle.running);
+        assert!(lifecycle.visible);
+        assert!(runtime.frame().is_some());
+    }
+
+    #[test]
+    fn recording_handoff_restore_uses_wanted_not_visible() {
+        let (runtime, generation) = live_runtime();
+        let preview = RecordingPreview::acquire_runtime(runtime.clone()).expect("handoff");
+
+        let handoff = runtime.handoff().expect("ownership");
+        assert!(handoff.should_restore(runtime.lifecycle(), false));
+
+        runtime.set_recording_wanted(false);
+        let hidden = runtime.handoff().expect("ownership");
+        assert!(!hidden.should_restore(runtime.lifecycle(), false));
+
+        runtime.set_recording_wanted(true);
+        runtime.update_lifecycle(generation, None, Some(false));
+        let pending = runtime.handoff().expect("ownership");
+        assert!(pending.should_restore(runtime.lifecycle(), false));
+
+        runtime.update_lifecycle(generation, None, Some(true));
+        assert!(runtime.frame().is_some());
+        assert!(
+            !PreviewHandoff {
+                generation: generation.wrapping_add(1),
+                wanted: true,
+                synced: false,
+            }
+            .should_restore(runtime.lifecycle(), false)
+        );
+
+        preview.mark_started();
+        assert!(
+            !runtime
+                .handoff()
+                .expect("ownership")
+                .should_restore(runtime.lifecycle(), false)
+        );
+        drop(preview);
+        assert!(!runtime.recording_owned());
+    }
+
+    fn pending_session(generation: u64) -> CaptureSession {
+        CaptureSession {
+            generation,
+            stop: Arc::new(AtomicBool::new(false)),
+            interrupt: Arc::new(Mutex::new(None)),
+            thread: std::thread::spawn(|| {}),
+        }
+    }
+
+    #[test]
+    fn recording_handoff_adopts_only_a_matching_pending_generation() {
+        let runtime = Arc::new(CameraRuntime::new());
+        let generation = runtime.advance_generation();
+        assert!(runtime.mark_starting(generation));
+        *runtime.capture.lock().expect("capture") = Some(pending_session(generation));
+        let preview = RecordingPreview::acquire_runtime(runtime.clone()).expect("handoff");
+        let handoff = runtime.handoff().expect("ownership");
+        assert_eq!(handoff.generation, generation);
+        assert!(handoff.wanted);
+        assert!(!runtime.lifecycle().visible);
+        assert!(handoff.should_restore(runtime.lifecycle(), false));
+        preview.mark_started();
+        drop(preview);
+
+        let runtime = Arc::new(CameraRuntime::new());
+        let generation = runtime.advance_generation();
+        assert!(runtime.mark_starting(generation));
+        *runtime.capture.lock().expect("capture") =
+            Some(pending_session(generation.wrapping_add(1)));
+        let preview = RecordingPreview::acquire_runtime(runtime.clone()).expect("handoff");
+        assert!(!runtime.handoff().expect("ownership").wanted);
+        preview.mark_started();
+        drop(preview);
+    }
+
+    #[test]
+    fn stopped_standalone_session_is_not_adopted() {
+        let runtime = Arc::new(CameraRuntime::new());
+        let generation = runtime.advance_generation();
+        *runtime.capture.lock().expect("capture") = Some(pending_session(generation));
+        let preview = RecordingPreview::acquire_runtime(runtime.clone()).expect("handoff");
+        let handoff = runtime.handoff().expect("ownership");
+        assert_eq!(handoff.generation, generation);
+        assert!(!handoff.wanted);
+        assert!(!handoff.should_restore(runtime.lifecycle(), false));
+        preview.mark_started();
+        drop(preview);
+        assert!(!runtime.recording_owned());
+    }
+
+    #[test]
+    fn recording_hide_releases_cached_frame_and_keeps_position() {
+        let (runtime, visible_generation) = live_runtime();
+        let preview = RecordingPreview::acquire_runtime(runtime.clone()).expect("handoff");
+        if let Ok(mut position) = runtime.position.lock() {
+            *position = Some((11, 22));
+        }
+
+        let hidden_generation = runtime.advance_generation();
+        assert!(hide_recording_panel(&runtime, hidden_generation));
+        assert!(!runtime.mark_visible(visible_generation));
+        assert!(runtime.frame().is_none());
+        assert!(!runtime.lifecycle().visible);
+        assert!(runtime.recording_owned());
+
+        preview.publish(Arc::from(vec![1u8; 16]), 2, 2);
+        assert!(runtime.frame().is_none());
+
+        let position = *runtime.position.lock().expect("position");
+        assert_eq!(position, Some((11, 22)));
+
+        preview.mark_started();
+        drop(preview);
+    }
+
+    #[test]
+    fn generation_advance_clears_old_restore_intent() {
+        let (runtime, generation) = live_runtime();
+        let preview = RecordingPreview::acquire_runtime(runtime.clone()).expect("handoff");
+        assert!(runtime.handoff().expect("ownership").wanted);
+
+        let advanced = runtime.advance_generation();
+        let handoff = runtime.handoff().expect("ownership");
+        assert_eq!(handoff.generation, advanced);
+        assert_ne!(advanced, generation);
+        assert!(!handoff.wanted);
+        assert!(!handoff.should_restore(runtime.lifecycle(), false));
+        assert!(
+            PreviewHandoff {
+                generation: advanced,
+                wanted: true,
+                synced: false,
+            }
+            .should_restore(runtime.lifecycle(), false)
+        );
+        assert!(!runtime.mark_visible(generation));
+
+        preview.mark_started();
+        drop(preview);
+        assert!(!runtime.recording_owned());
+    }
+
+    #[test]
+    fn handoff_rejects_a_stale_standalone_stop_and_hide() {
+        let (runtime, generation) = live_runtime();
+        let preview = RecordingPreview::acquire_runtime(runtime.clone()).expect("handoff");
+
+        assert!(!runtime.stop_standalone_lifecycle(generation));
+        hide_standalone_window(&runtime, generation);
+        let lifecycle = runtime.lifecycle();
+        assert!(lifecycle.running);
+        assert!(lifecycle.visible);
+
+        preview.mark_started();
+        drop(preview);
+        assert!(!runtime.lifecycle().running);
+        assert!(runtime.lifecycle().visible);
+    }
+
+    #[test]
+    fn recording_handoff_rejects_a_second_owner() {
+        let (runtime, _) = live_runtime();
+        let preview = RecordingPreview::acquire_runtime(runtime.clone()).expect("handoff");
+        assert!(RecordingPreview::acquire_runtime(runtime.clone()).is_err());
+        preview.mark_started();
+        drop(preview);
+        assert!(!runtime.recording_owned());
     }
 }

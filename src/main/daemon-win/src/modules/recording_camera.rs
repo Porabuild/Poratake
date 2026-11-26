@@ -1,4 +1,5 @@
 use super::camera_devices::{enumerate_cameras, select_camera};
+use super::camera_preview::RecordingPreview;
 use super::recorder_types::{RecorderError, StagedAsset};
 use crate::com::retain_process_mta;
 use crate::mf::{create_attributes, create_video_type, wide_path};
@@ -8,6 +9,7 @@ use std::collections::VecDeque;
 use std::fs::OpenOptions;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime};
@@ -239,7 +241,7 @@ enum WorkerEvent {
 struct CameraFrame {
     source_time: i64,
     arrived_at: Instant,
-    bytes: Vec<u8>,
+    bytes: Arc<[u8]>,
 }
 
 #[derive(Clone, Copy)]
@@ -284,7 +286,7 @@ impl IMFSourceReaderCallback_Impl for SourceReaderCallback_Impl {
             let _ = self.events.send(WorkerEvent::Frame(CameraFrame {
                 source_time: timestamp,
                 arrived_at: Instant::now(),
-                bytes: Vec::new(),
+                bytes: Arc::from(Vec::new()),
             }));
             return Ok(());
         };
@@ -330,10 +332,11 @@ fn copy_sample(
         return Ok(CameraFrame {
             source_time,
             arrived_at,
-            bytes: Vec::new(),
+            bytes: Arc::from(Vec::new()),
         });
     }
-    let bytes = unsafe { std::slice::from_raw_parts(pointer, length as usize) }.to_vec();
+    let bytes: Arc<[u8]> =
+        Arc::from(unsafe { std::slice::from_raw_parts(pointer, length as usize) });
     unsafe { buffer.Unlock() }.map_err(|error| error.to_string())?;
     Ok(CameraFrame {
         source_time,
@@ -423,6 +426,7 @@ fn run_worker(
                     continue;
                 }
                 if !frame.bytes.is_empty() {
+                    runtime.publish_preview(&frame);
                     if let Err(error) = runtime.handle_frame(frame) {
                         let pending_ready = ready.take();
                         if let Some(ready) = pending_ready {
@@ -494,6 +498,9 @@ fn handle_command(
             let result = terminal_error
                 .clone()
                 .map_or_else(|| runtime.sync(clock), Err);
+            if result.is_ok() {
+                runtime.mark_preview_started();
+            }
             if let Err(error) = &result
                 && error.code != "INVALID_STATE"
             {
@@ -647,6 +654,7 @@ struct CameraRuntime {
     visible_spans: Vec<CameraVisibleSpan>,
     capture_stopped: bool,
     committed: bool,
+    preview: Option<RecordingPreview>,
 }
 
 impl CameraRuntime {
@@ -654,6 +662,7 @@ impl CameraRuntime {
         config: CameraRecordingConfig,
         events: Sender<WorkerEvent>,
     ) -> Result<Self, RecorderError> {
+        let preview = RecordingPreview::acquire().map_err(RecorderError::configuration)?;
         let selected = select_camera(
             enumerate_cameras().map_err(RecorderError::configuration)?,
             config.device_id.as_deref(),
@@ -832,6 +841,7 @@ impl CameraRuntime {
             visible_spans: Vec::new(),
             capture_stopped: false,
             committed: false,
+            preview: Some(preview),
         })
     }
 
@@ -851,6 +861,30 @@ impl CameraRuntime {
             )
         }
         .map_err(|error| RecorderError::capture(format!("Failed to request camera frame: {error}")))
+    }
+
+    fn has_complete_rgb_frame(&self, bytes: &[u8]) -> bool {
+        bytes.len() >= self.width.saturating_mul(self.height).saturating_mul(4) as usize
+    }
+
+    fn publish_preview(&self, frame: &CameraFrame) {
+        let Some(preview) = self.preview.as_ref() else {
+            return;
+        };
+        let (Ok(width), Ok(height)) = (i32::try_from(self.width), i32::try_from(self.height))
+        else {
+            return;
+        };
+        if !self.has_complete_rgb_frame(&frame.bytes) {
+            return;
+        }
+        preview.publish(frame.bytes.clone(), width, height);
+    }
+
+    fn mark_preview_started(&self) {
+        if let Some(preview) = self.preview.as_ref() {
+            preview.mark_started();
+        }
     }
 
     fn handle_frame(&mut self, frame: CameraFrame) -> Result<(), RecorderError> {
@@ -973,8 +1007,7 @@ impl CameraRuntime {
             return Ok(());
         }
         self.visible_start.get_or_insert(timestamp);
-        let minimum_size = self.width.saturating_mul(self.height).saturating_mul(4) as usize;
-        if frame.bytes.len() < minimum_size {
+        if !self.has_complete_rgb_frame(&frame.bytes) {
             return Err(RecorderError::capture(
                 "Camera returned an incomplete RGB frame",
             ));
@@ -1157,10 +1190,17 @@ impl CameraRuntime {
 impl Drop for CameraRuntime {
     fn drop(&mut self) {
         self.writer.take();
+        if let Some(source) = self.source.take() {
+            let _ = unsafe { source.Shutdown() };
+        }
+        self.reader.take();
+        self.callback.take();
+        let preview = self.preview.take();
         if !self.committed {
             let _ = std::fs::remove_file(&self.temporary_video_path);
             let _ = std::fs::remove_file(&self.temporary_metadata_path);
         }
+        drop(preview);
     }
 }
 
