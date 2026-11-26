@@ -215,6 +215,13 @@ fn component_themes(vars: &ThemeVars) -> ComponentThemes {
                     "muted",
                     ButtonStyle::default().foreground(ComponentColor::Muted),
                 )
+                .recipe(
+                    "settings-secondary",
+                    ButtonStyle::default()
+                        .foreground(ComponentColor::Foreground)
+                        .hover_foreground(ComponentColor::Foreground)
+                        .pressed_foreground(ComponentColor::Foreground),
+                )
                 .recipe("danger", ButtonStyle::default().variant(Variant::Outline))
                 .recipe(
                     "danger-text",
@@ -694,6 +701,22 @@ mod tests {
         assert_eq!(
             overlay.radius,
             Some(gpui::px(crate::ui::chrome::OVERLAY_BUTTON_RADIUS))
+        );
+        let settings_secondary = theme
+            .components
+            .button
+            .resolve(&["settings-secondary".into()]);
+        assert_eq!(
+            settings_secondary.foreground,
+            Some(ComponentColor::Foreground)
+        );
+        assert_eq!(
+            settings_secondary.hover_foreground,
+            Some(ComponentColor::Foreground)
+        );
+        assert_eq!(
+            settings_secondary.pressed_foreground,
+            Some(ComponentColor::Foreground)
         );
         let danger = theme.components.button.resolve(&["danger".into()]);
         assert_eq!(danger.variant, Some(Variant::Outline));

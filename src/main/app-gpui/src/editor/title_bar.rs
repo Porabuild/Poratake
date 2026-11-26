@@ -405,7 +405,10 @@ impl RenderOnce for TitleBar {
             .flex_none()
             .overflow_x_hidden()
             .bg(theme.card)
-            .px(px(chrome::TITLE_BAR_PADDING_X));
+            .pl(px(chrome::TITLE_BAR_PADDING_X))
+            .when(!cfg!(windows), |bar| {
+                bar.pr(px(chrome::TITLE_BAR_PADDING_X))
+            });
         if macos {
             bar = bar
                 .child(crate::ui::window_controls::leading_inset())
