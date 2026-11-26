@@ -455,6 +455,7 @@ async function stopActiveRecording(
   clearRecordingErrorListener();
   recordingGeneration += 1;
 
+  const overlayHidden = hideRecordingOverlay();
   try {
     await hideControl();
   } catch (error) {
@@ -478,7 +479,7 @@ async function stopActiveRecording(
     stopError = error instanceof Error ? error : new Error(String(error));
   }
 
-  await hideRecordingOverlay();
+  await overlayHidden;
   hideRecordingTray();
 
   currentRecordingPath = null;

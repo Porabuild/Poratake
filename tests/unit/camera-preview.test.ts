@@ -116,6 +116,19 @@ describe('camera-preview', () => {
     expect(m.isCameraPreviewVisible()).toBe(false);
   });
 
+  it('treats cancellation of a hidden pending preview as intentional', async () => {
+    const reply = Promise.withResolvers<null>();
+    mockDaemonCall.mockReturnValueOnce(reply.promise);
+    const m = await import('@/main/capture/video/camera-preview');
+
+    const showing = m.showCameraPreview(sampleSettings);
+    m.hideCameraPreview();
+    reply.reject(new Error('Camera preview cancelled'));
+
+    await expect(showing).resolves.toBeUndefined();
+    expect(m.isCameraPreviewVisible()).toBe(false);
+  });
+
   it('updates the visible camera preview position', async () => {
     const m = await import('@/main/capture/video/camera-preview');
     await m.showCameraPreview(sampleSettings);

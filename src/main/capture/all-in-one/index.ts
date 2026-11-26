@@ -213,6 +213,12 @@ async function handleScreenshotAction(): Promise<void> {
   }
 }
 
+function prewarmRecordingMode(): void {
+  prewarmRecordingControlWindow();
+  void prewarmRecorder();
+  void prewarmOverlay();
+}
+
 function handleRecordAction(): void {
   if (!isFeatureSupported('recording')) {
     return;
@@ -224,9 +230,7 @@ function handleRecordAction(): void {
   }
 
   const windowId = currentSelection?.windowId;
-  prewarmRecordingControlWindow();
-  prewarmRecorder();
-  prewarmOverlay();
+  prewarmRecordingMode();
 
   hideAllInOneControl();
 
@@ -305,9 +309,11 @@ function handleCopyColorAction(color: string): void {
   handleCloseAction();
 }
 
-function applyActiveCaptureTarget(): void {
+function applyActiveCaptureTarget(updateSelectionMode = true): void {
   const target = activeCaptureTarget();
-  void setAreaSelectionMode(SELECTION_MODES[target]);
+  if (updateSelectionMode) {
+    void setAreaSelectionMode(SELECTION_MODES[target]);
+  }
   setAreaSelectorToolbar(toolbarState());
 }
 
@@ -316,11 +322,15 @@ function handleCaptureModeSelected(mode: AllInOneCaptureMode): void {
   if (mode === 'ocr' && !isFeatureSupported('ocr')) return;
   if (mode === activeCaptureMode) return;
 
+  const previousTarget = activeCaptureTarget();
   activeCaptureMode = mode;
   if (mode !== 'ocr') {
     persistPreferences({ lastMode: mode });
   }
-  applyActiveCaptureTarget();
+  if (mode === 'record') {
+    prewarmRecordingMode();
+  }
+  applyActiveCaptureTarget(previousTarget !== activeCaptureTarget());
 }
 
 function handleCaptureTargetSelected(target: AllInOneCaptureTarget): void {
@@ -380,6 +390,9 @@ export default async function startAllInOne(): Promise<void> {
 
   restorePreferences();
   currentSelection = null;
+  if (activeCaptureMode === 'record') {
+    prewarmRecordingMode();
+  }
 
   const handleSelected = (selection: AreaSelection) => {
     const bounds = extractBounds(selection);

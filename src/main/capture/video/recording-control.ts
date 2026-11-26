@@ -217,6 +217,13 @@ async function reportControlError(error: unknown): Promise<void> {
 
 async function handleEvent(event: string, data?: EventData): Promise<void> {
   if (isHandlingStart && currentMode === 'pre-recording') return;
+  if (
+    isHandlingStart &&
+    event !== 'recording-control:stop' &&
+    event !== 'recording-control:delete'
+  ) {
+    return;
+  }
 
   switch (event) {
     case 'recording-control:toggle-system-audio':
@@ -776,6 +783,18 @@ export function showPreRecordingControl(
         }
       : null;
   const settings = getRecordingSettings();
+  const position = calculateControlPosition(area);
+  currentControlCenter = {
+    x: position.x + getWindowWidth() / 2,
+    y: position.y,
+  };
+
+  showRecordingControlBrowserWindow(
+    getRecordingControlState(),
+    position,
+    handleBrowserAction
+  );
+
   if (settings.cameraEnabled) {
     const cameraSettings = area
       ? {
@@ -803,18 +822,6 @@ export function showPreRecordingControl(
       await reportControlError(error);
     });
   }
-
-  const position = calculateControlPosition(area);
-  currentControlCenter = {
-    x: position.x + getWindowWidth() / 2,
-    y: position.y,
-  };
-
-  showRecordingControlBrowserWindow(
-    getRecordingControlState(),
-    position,
-    handleBrowserAction
-  );
 }
 
 export function updateRecordingControlPosition(area: {
@@ -878,9 +885,10 @@ function createRecordingSession(config: RecordingConfig): RecordingSession {
   };
 }
 
-export async function showRecordingControl(
-  config: RecordingConfig
-): Promise<void> {
+function presentRecordingControl(
+  config: RecordingConfig,
+  startClock: boolean
+): void {
   currentMode = 'recording';
   recordingTarget = config.windowName ?? null;
   recordingSession = createRecordingSession(config);
@@ -895,7 +903,21 @@ export async function showRecordingControl(
     position,
     handleBrowserAction
   );
-  startTimer();
+  if (startClock) {
+    startTimer();
+  }
+}
+
+export async function showPendingRecordingControl(
+  config: RecordingConfig
+): Promise<void> {
+  presentRecordingControl(config, false);
+}
+
+export async function showRecordingControl(
+  config: RecordingConfig
+): Promise<void> {
+  presentRecordingControl(config, true);
 }
 
 export async function hideRecordingControl(): Promise<void> {
