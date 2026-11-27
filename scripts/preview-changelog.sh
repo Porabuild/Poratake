@@ -18,9 +18,8 @@ usage() {
   cat <<EOF
 Preview the release notes that would be generated for the next Poratake release.
 
-Uses the same commit-parsing logic as scripts/release.sh (feat: -> Features,
-fix: -> Bug Fixes, other prefixes -> Internal), so the output matches what the
-real release would publish.
+Groups feat: commits under Features and fix: commits under Bug Fixes,
+following the Release workflow.
 
 Usage:
   scripts/preview-changelog.sh [version] [--internal] [--raw]
@@ -33,8 +32,7 @@ Arguments:
                 to a patch-bump of the latest v* tag (e.g. v1.12.1 -> 1.12.2).
 
 Options:
-  --internal    Include the Internal section (matches internal_release_notes.txt).
-                Default output matches the public release_notes.txt.
+  --internal    Include other commit titles in the Internal section.
   --raw         Skip ANSI styling and print the markdown body as-is.
   -h, --help    Show this help.
 EOF

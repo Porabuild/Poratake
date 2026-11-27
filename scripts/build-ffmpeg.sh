@@ -271,9 +271,7 @@ main() {
     log_info "Binary size: $(du -h "$OUTPUT_DIR/ffmpeg" | cut -f1)"
     log_info ""
     log_info "Next steps:"
-    log_info "  1. Test the binary: $OUTPUT_DIR/ffmpeg -version"
-    log_info "  2. Update electron-builder.json5 to include the new binary"
-    log_info "  3. Remove @ffmpeg-installer/ffmpeg from package.json (optional)"
+    log_info "Test the binary: $OUTPUT_DIR/ffmpeg -version"
 }
 
 main "$@"

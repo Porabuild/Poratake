@@ -1,7 +1,0 @@
-Synthetic 4K GPUI video composition timing, macOS, 2026-11-16
-
-A single solid 3840 x 2160 frame with an 800 x 600 pixelation annotation was composed seven times per mode in the optimized Rust test profile. The median was 4.90 ms for composition directly at 960 x 540, and 41.09 ms for the full 3840 x 2160 composition. The latter does not include resizing, frame decode, texture upload, playback scheduling, or other effects. These numbers compare composition costs on this machine; they do not establish end-to-end frame rate or slower-device performance. Always rendering the complete frame at source resolution for a small playback preview would therefore materially increase cost in this case.
-
-Reproduce by running:
-git apply --unidiff-zero tests/native/evidence/macos-ui/video-redaction-preview-timing.patch
-cargo test --offline --locked --manifest-path src/main/Cargo.toml -p poratake-gpui synthetic_redaction_preview_timing_probe -- --ignored --nocapture

@@ -1,4 +1,0 @@
-isolated annotation changed pixels=1790
-isolated saved PNG: 640x360, changed pixels=1790
-native save panel uses the isolated directory and a separate PNG filename
-directly saved PNG and reopened editor match the annotated editor pixel for pixel

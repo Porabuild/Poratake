@@ -2,7 +2,6 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { DAEMON_METHODS } from '@/types/daemon';
 
 interface ContractModule {
   platforms: string[];
@@ -53,15 +52,11 @@ describe('native daemon contract', () => {
     expect(result.status).toBe(0);
   });
 
-  it('uses the neutral schema for shared methods and platform modules', () => {
+  it('keeps platform module inventories aligned', () => {
     const value = contract();
 
-    expect(Object.keys(value.modules).toSorted()).toEqual(
-      Object.keys(DAEMON_METHODS).toSorted()
-    );
-    for (const [module, methods] of Object.entries(DAEMON_METHODS)) {
-      expect([...methods]).toEqual(value.modules[module].shared);
-    }
+    expect(value.modules).not.toHaveProperty('area-selector');
+    expect(value.modules).not.toHaveProperty('display-selector');
 
     expect(
       Object.entries(value.modules)

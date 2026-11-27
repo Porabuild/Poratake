@@ -78,15 +78,6 @@ jobs:
           toolchain: '1.99.1'
           targets: aarch64-apple-darwin,x86_64-apple-darwin
 
-      - name: Cache Bun installs
-        if: ${{ !inputs.skip_cache }}
-        uses: actions/cache@v5
-        with:
-          path: ~/.bun/install/cache
-          key: ${{ runner.os }}-gpui-bun-${{ hashFiles('bun.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-gpui-bun-
-
       - name: Install macOS native build tools
         env:
           HOMEBREW_NO_AUTO_UPDATE: '1'
@@ -96,11 +87,6 @@ jobs:
           # check and prints a notice on every invocation. We don't use it.
           brew untap aws/tap || true
           brew install nasm pkg-config cmake
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
-        env:
-          ELECTRON_SKIP_BINARY_DOWNLOAD: 1
 
       - name: Update package.json version
         run: node scripts/set-package-version.mjs "${{ needs.prepare.outputs.version }}"
@@ -228,20 +214,6 @@ jobs:
         with:
           toolchain: '1.99.1'
           targets: ${{ matrix.arch == 'arm64' && 'aarch64-pc-windows-msvc' || 'x86_64-pc-windows-msvc' }}
-
-      - name: Cache Bun installs
-        if: ${{ !inputs.skip_cache }}
-        uses: actions/cache@v5
-        with:
-          path: ~/.bun/install/cache
-          key: ${{ runner.os }}-${{ matrix.arch }}-bun-${{ hashFiles('bun.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-${{ matrix.arch }}-bun-
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
-        env:
-          ELECTRON_SKIP_BINARY_DOWNLOAD: 1
 
       - name: Update package.json version
         run: node scripts/set-package-version.mjs "${{ needs.prepare.outputs.version }}"

@@ -1,4 +1,0 @@
-Generated recording, simulated UI gesture, 720x520 editor, macOS, FFmpeg 9.0.2.
-UI drawing mask preview/export RGB MAE: edited=20.77, original=118.72, pixels=1196
-test windows::video_editor::keyboard_demo_tests::drawing_tool_ui_edit_survives_reopen_and_matches_export ... ok
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1105 filtered out; finished in 2.18s

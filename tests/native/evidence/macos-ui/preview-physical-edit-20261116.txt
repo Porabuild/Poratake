@@ -1,5 +1,0 @@
-macOS native preview Edit handoff, 2026-11-16
-
-An isolated GPUI probe created a generated checkerboard PNG and a normal-level 208 x 148 point preview. The computer-use helper sent a foreground pointer drag to reveal the controls and a foreground click on Edit; both deliveries were reported as unverified. A subsequent window listing showed that the preview had closed and a separate 950 x 650 point Poratake editor owned by the probe had opened. Its window-only ScreenCaptureKit screenshot showed the generated checkerboard, and its isolated annotation status reported zero changed pixels.
-
-The editor appeared focused in the helper's accessibility tree, but NSWorkspace reported another application as frontmost. No drawing or keyboard input was sent to the editor. The helper was disabled and the isolated probe exited normally. No real capture, device access or privacy request was started.

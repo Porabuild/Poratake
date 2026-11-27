@@ -1,2 +1,0 @@
-cargo xwin check --offline --locked --manifest-path src/main/Cargo.toml -p poratake-gpui --tests --target x86_64-pc-windows-msvc
-    Finished `dev` profile [optimized + debuginfo] target(s) in 2m 40s

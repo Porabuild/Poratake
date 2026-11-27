@@ -11,11 +11,9 @@ mod tone_map;
 pub mod trace;
 mod ui;
 
-use modules::area_selector::AreaSelectorModule;
 use modules::camera_preview::CameraPreviewModule;
 use modules::desktop_helper::DesktopHelperModule;
 use modules::desktop_wallpaper::DesktopWallpaperModule;
-use modules::display_selector::DisplaySelectorModule;
 use modules::freeze_screen::FreezeScreenModule;
 use modules::media_devices::MediaDevicesModule;
 use modules::ocr::OcrModule;
@@ -41,14 +39,12 @@ pub fn run() {
     let mut router = Router::with_trace(|module, method| {
         trace::trace(&format!("route {module} {method}"));
     });
-    router.register(Box::new(AreaSelectorModule::new()));
     router.register(Box::new(OcrModule));
     router.register(Box::new(QrCodeModule::new()));
     router.register(Box::new(DesktopHelperModule));
     router.register(Box::new(DesktopWallpaperModule));
     router.register(Box::new(FreezeScreenModule::new()));
     router.register(Box::new(TimerControlModule));
-    router.register(Box::new(DisplaySelectorModule::new()));
     router.register(Box::new(WindowSelectorModule::new()));
     router.register(Box::new(PrintModule));
     router.register(Box::new(RecordingOverlayModule::new()));

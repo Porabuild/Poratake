@@ -271,20 +271,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_hint_is_the_line_the_reference_shows() {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .ancestors()
-            .nth(3)
-            .expect("repository root")
-            .to_path_buf();
-        let reference = std::fs::read_to_string(
-            root.join("src/renderer/components/area-overlay/color-picker.tsx"),
-        )
-        .expect("reference color picker");
-        assert!(reference.contains(HINT));
-    }
-
-    #[test]
     fn frame_point_scales_and_clamps_logical_coordinates() {
         let frame = image::RgbaImage::new(1600, 1200);
         let viewport = selection::Size {

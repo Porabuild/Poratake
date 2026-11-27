@@ -34,18 +34,6 @@
     }
   },
   "modules": {
-    "area-selector": {
-      "platforms": ["macos", "windows"],
-      "shared": [
-        "disableWindowTransitions",
-        "hideWindowWithoutTransitions",
-        "showWindowWithoutTransitions",
-        "setWindowRegion",
-        "getForegroundWindow",
-        "setForegroundWindow"
-      ],
-      "linux": []
-    },
     "camera-preview": {
       "platforms": ["macos", "windows"],
       "shared": ["show", "hide", "update", "setContentProtection"],
@@ -116,11 +104,6 @@
       "linux": [],
       "errors": ["BUSY", "UNSUPPORTED_SESSION", "WALLPAPER_UNAVAILABLE"],
       "result": { "type": ["path", "data"], "value": "string" }
-    },
-    "display-selector": {
-      "platforms": ["macos", "windows"],
-      "shared": ["select", "cancel"],
-      "linux": []
     },
     "freeze-screen": {
       "platforms": ["macos", "windows", "linux"],

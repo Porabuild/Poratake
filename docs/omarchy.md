@@ -2,7 +2,7 @@
 
 Omarchy 4.5 runs Arch Linux on Hyprland, on x86_64 and aarch64. Poratake ships
 Linux x64 and arm64 archives for that session, starting with the first GPUI
-release; earlier Electron releases have no Linux assets.
+release. Earlier releases have no Linux assets.
 
 ## Requirements
 
@@ -85,8 +85,7 @@ overlay code, but they still need a pass on a real Hyprland session:
 The Wayland recorder is deliberately disabled. `zed-scap` reports a zero output
 size on Linux and does not expose the portal stream's source type, position, or
 size, so an area recording cannot be cropped or passed to FFmpeg correctly.
-`GPUI-UI-PARITY-AUDIT.md` tracks the required source-aware capture work. Do not
-enable recording in `src/types/platform-capabilities.json` until it has been
+Enable recording in `src/types/platform-capabilities.json` after source-aware stream selection and area mapping have been
 verified on a real Hyprland session.
 
 X11 sessions keep the full Linux feature set, including recording and window

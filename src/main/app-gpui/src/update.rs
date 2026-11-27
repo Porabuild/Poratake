@@ -822,55 +822,8 @@ mod tests {
         assert!(!is_newer("nightly", "0.9.5"));
     }
 
-    /// The strings and the button rule come straight from `about-tab.tsx`, so a
-    /// change there should fail here rather than drift silently.
     #[test]
-    fn the_states_match_the_reference() {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .ancestors()
-            .nth(3)
-            .expect("repository root")
-            .to_path_buf();
-        let about =
-            std::fs::read_to_string(root.join("src/renderer/components/settings/about-tab.tsx"))
-                .expect("read about-tab.tsx");
-
-        for status in [
-            Status::Idle,
-            Status::Checking,
-            Status::UpToDate,
-            Status::Available {
-                version: "1.0.0".into(),
-                artifact: Artifact {
-                    name: "Poratake-1.0.0-win-x64.exe".into(),
-                    url: "https://x".into(),
-                    size: 1,
-                },
-                sha512: "AAA".into(),
-                notes: None,
-            },
-            Status::Downloading {
-                version: "1.0.0".into(),
-                progress: 0.5,
-                notes: None,
-            },
-            Status::Ready {
-                version: "1.0.0".into(),
-                installer: std::path::PathBuf::from("installer.exe"),
-                notes: None,
-            },
-            Status::Error {
-                message: "boom".into(),
-            },
-            Status::Unsupported,
-        ] {
-            assert!(
-                about.contains(status.text()),
-                "`{}` is not a string about-tab.tsx renders",
-                status.text()
-            );
-        }
-
+    fn check_button_is_visible_when_an_update_check_can_start() {
         assert!(Status::Idle.shows_check_button());
         assert!(Status::UpToDate.shows_check_button());
         assert!(Status::Error {
@@ -891,23 +844,8 @@ mod tests {
                 notes: None,
             }
             .shows_check_button(),
-            "the reference hides Check while an update is pending"
+            "Check is hidden while an update is pending"
         );
-    }
-
-    /// The owner and repository have to stay in step with `src/types/product.ts`,
-    /// which is what `electron-updater` is pointed at.
-    #[test]
-    fn the_feed_matches_the_one_electron_updates_from() {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .ancestors()
-            .nth(3)
-            .expect("repository root")
-            .to_path_buf();
-        let product =
-            std::fs::read_to_string(root.join("src/types/product.ts")).expect("read product.ts");
-        assert!(product.contains(&format!("UPDATE_OWNER = '{OWNER}'")));
-        assert!(product.contains(&format!("UPDATE_REPOSITORY = '{REPOSITORY}'")));
     }
 
     #[test]

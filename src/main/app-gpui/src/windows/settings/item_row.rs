@@ -888,32 +888,8 @@ mod tests {
         assert_eq!(filled_segments(0.9, false), 0);
     }
 
-    /// `shortcut-input.tsx` renders `<Label className="text-sm font-normal">`,
-    /// overriding `Label`'s own `font-medium`; every other row keeps it. Both
-    /// sources are read here so a change to either fails a test rather than
-    /// only showing up in a screenshot.
     #[test]
     fn only_shortcut_rows_drop_to_the_normal_weight() {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .ancestors()
-            .nth(3)
-            .expect("repository root")
-            .to_path_buf();
-        let shortcut_input = std::fs::read_to_string(
-            root.join("src/renderer/components/settings/shortcut-input.tsx"),
-        )
-        .expect("read shortcut-input.tsx");
-        assert!(
-            shortcut_input.contains(r#"<Label className="text-sm font-normal">"#),
-            "shortcut-input.tsx no longer overrides the label weight"
-        );
-        let label = std::fs::read_to_string(root.join("src/renderer/components/ui/label.tsx"))
-            .expect("read label.tsx");
-        assert!(
-            label.contains("text-sm font-medium"),
-            "`Label` no longer defaults to font-medium"
-        );
-
         let items = crate::windows::settings::registry::items();
         let mut shortcuts = 0;
         let mut others = 0;

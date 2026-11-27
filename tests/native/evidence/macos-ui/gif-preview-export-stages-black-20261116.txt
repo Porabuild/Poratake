@@ -1,4 +1,0 @@
-diagnostic composition: mean 0.461, channels above 32 5, pixel [1, 1, 1]
-diagnostic mp4: mean 1.527, channels above 32 5, pixel [0, 0, 0]
-diagnostic gif: mean 1.640, channels above 32 5, pixel [0, 0, 0]
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1062 filtered out; finished in 6.10s

@@ -547,25 +547,6 @@ mod tests {
         assert_eq!(windows_display_preference_id(gpui::DisplayId::new(0)), None);
     }
 
-    #[cfg(windows)]
-    #[test]
-    #[ignore = "requires the primary display ID from Electron in the same session"]
-    fn primary_windows_display_id_matches_electron() {
-        use windows::Win32::Foundation::POINT;
-        use windows::Win32::Graphics::Gdi::{MonitorFromPoint, MONITOR_DEFAULTTOPRIMARY};
-
-        let expected: i64 = std::env::var("PORATAKE_EXPECTED_PRIMARY_DISPLAY_ID")
-            .unwrap()
-            .parse()
-            .unwrap();
-        let monitor = unsafe { MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY) };
-        assert!(!monitor.is_invalid());
-        assert_eq!(
-            windows_display_preference_id(gpui::DisplayId::new(monitor.0 as usize as u64)),
-            Some(expected)
-        );
-    }
-
     /// The case this module exists for: a 48px taskbar along the bottom of a
     /// 3440x1440 display. Electron's `workArea` is 3440x1392 there.
     #[test]

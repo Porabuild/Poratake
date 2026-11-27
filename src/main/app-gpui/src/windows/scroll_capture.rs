@@ -1358,20 +1358,6 @@ mod tests {
     use herogpui::test::TestWindowExt;
 
     #[test]
-    fn the_prompt_is_the_line_the_reference_shows() {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .ancestors()
-            .nth(3)
-            .expect("repository root")
-            .to_path_buf();
-        let reference = std::fs::read_to_string(
-            root.join("src/renderer/windows/scroll-capture-overlay-window.tsx"),
-        )
-        .expect("reference scroll overlay");
-        assert!(reference.contains(PROMPT_TEXT));
-    }
-
-    #[test]
     fn control_bar_goes_below_the_area_when_it_fits() {
         assert_eq!(
             control_origin((100.0, 100.0, 400.0, 300.0), (1920.0, 1080.0)),

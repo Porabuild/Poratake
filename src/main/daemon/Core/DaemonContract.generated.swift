@@ -1,19 +1,6 @@
 import Foundation
 
 enum DaemonContract {
-    enum AreaSelector {
-        static let module = "area-selector"
-
-        enum Method: String {
-            case disableWindowTransitions = "disableWindowTransitions"
-            case hideWindowWithoutTransitions = "hideWindowWithoutTransitions"
-            case showWindowWithoutTransitions = "showWindowWithoutTransitions"
-            case setWindowRegion = "setWindowRegion"
-            case getForegroundWindow = "getForegroundWindow"
-            case setForegroundWindow = "setForegroundWindow"
-        }
-    }
-
     enum CameraPreview {
         static let module = "camera-preview"
 
@@ -39,15 +26,6 @@ enum DaemonContract {
 
         enum Method: String {
             case get = "get"
-        }
-    }
-
-    enum DisplaySelector {
-        static let module = "display-selector"
-
-        enum Method: String {
-            case select = "select"
-            case cancel = "cancel"
         }
     }
 
@@ -168,11 +146,9 @@ enum DaemonContract {
     }
 
     static let macOSModules: Set<String> = [
-        AreaSelector.module,
         CameraPreview.module,
         DesktopHelper.module,
         DesktopWallpaper.module,
-        DisplaySelector.module,
         FreezeScreen.module,
         MediaDevices.module,
         OCR.module,

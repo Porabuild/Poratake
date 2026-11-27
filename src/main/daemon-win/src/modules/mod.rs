@@ -1,9 +1,7 @@
-pub mod area_selector;
 pub mod camera_devices;
 pub mod camera_preview;
 pub mod desktop_helper;
 pub mod desktop_wallpaper;
-pub mod display_selector;
 pub mod freeze_screen;
 pub mod media_devices;
 pub mod ocr;

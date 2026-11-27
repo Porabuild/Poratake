@@ -1,5 +1,0 @@
-macOS scroll-capture parameter validation, 2026-11-16
-
-A standalone invocation of the prior AnyCodable integer conversion with 1e300 terminated with: Double value cannot be converted to Int because the result would be greater than Int.max. The corrected conversion returns nil for that value, infinities and NaN, while preserving truncation toward zero for finite fractional values and accepting representable integer boundaries.
-
-The native window-ID validation fixture exercises scroll start with out-of-range coordinates, zero or negative dimensions, oversized dimensions, malformed display IDs, and valid negative coordinates and origins and display IDs. Invalid requests return INVALID_PARAMS before capture setup; the fixture's validation-only build does not resolve display origins, create capture UI, capture pixels or access media devices. The full scroll preview fixture also passes without the optional ScreenCaptureKit capture check. Production Swift typechecking passed for arm64-apple-macosx13.0 and x86_64-apple-macosx13.0.

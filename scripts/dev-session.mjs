@@ -13,7 +13,6 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 export async function runDevSession(label, start) {
   const env = { ...process.env };
-  delete env.ELECTRON_RUN_AS_NODE;
 
   let stoppedPreviousSession = false;
   while (!claimDevLock(root)) {
