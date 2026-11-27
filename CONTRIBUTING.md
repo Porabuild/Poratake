@@ -53,7 +53,7 @@ bun run package:gpui:win
 
 ### Linux
 
-Install the GPUI dependencies listed in `.github/workflows/checks.yml`, then:
+Install the GPUI dependencies listed in `.github/actions/linux-capture-deps/action.yml` (used by `.github/workflows/checks.yml`), then:
 
 ```bash
 cargo build --locked --manifest-path src/main/Cargo.toml --package poratake-daemon-linux --package poratake-gpui
@@ -79,8 +79,8 @@ bun run dev:gpui
 ```
 
 Rebuild the daemon whenever you change anything under `src/main/daemon/` on
-macOS or `src/main/daemon-win/` on Windows. Use `bun run build-daemon-win` for the
-Windows daemon.
+macOS, `src/main/daemon-win/` on Windows, or `src/main/daemon-linux/` on Linux.
+Use `bun run build-daemon-win` for the Windows daemon.
 
 ### Testing auto-update in dev
 
