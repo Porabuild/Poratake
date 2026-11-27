@@ -27,6 +27,10 @@ GPUI is only partially vendored. Poratake has complete crate-package copies of:
 The other `gpui-pre-*` support crates still come from crates.io. This is not a
 copy of the whole Zed repository.
 
+Separate from the GPUI patchset, `src/main/Cargo.toml` also carries a
+`[patch.crates-io]` path override for `vendor/rfd`, the native file-dialog
+crate. That override is not part of the GPUI version alignment.
+
 ## Why the GPUI patchset exists
 
 `gpui-pre` is an unofficial crates.io snapshot of Zed's GPUI crates. HeroGPUI

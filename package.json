@@ -2,7 +2,7 @@
   "name": "poratake",
   "private": true,
   "version": "1.0.6",
-  "description": "Capture, annotate, record, edit, and share on macOS and Windows.",
+  "description": "Capture, annotate, record, edit, and share on macOS, Windows, and Linux.",
   "author": "Serhii Vecherenko",
   "homepage": "https://porabuild.com/poratake",
   "repository": {

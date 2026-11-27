@@ -25,7 +25,7 @@ bash install-poratake.sh
 To install a specific release or directory:
 
 ```sh
-bash install-poratake.sh --version 0.9.7
+bash install-poratake.sh --version 1.0.6
 bash install-poratake.sh --install-dir "$HOME/Applications/Poratake"
 ```
 
@@ -84,9 +84,11 @@ overlay code, but they still need a pass on a real Hyprland session:
 
 The Wayland recorder is deliberately disabled. `zed-scap` reports a zero output
 size on Linux and does not expose the portal stream's source type, position, or
-size, so an area recording cannot be cropped or passed to FFmpeg correctly.
-Enable recording in `src/types/platform-capabilities.json` after source-aware stream selection and area mapping have been
-verified on a real Hyprland session.
+size, so an area recording cannot be cropped or passed to FFmpeg correctly. The
+`linuxWayland` target in `src/types/platform-capabilities.json` omits recording,
+and `src/main/app-gpui/src/system/capabilities.rs` applies the runtime
+Wayland/ScreenCast feature gating. Re-enable recording only after source-aware
+stream selection and area mapping have been verified on a real Hyprland session.
 
 X11 sessions keep the full Linux feature set, including recording and window
 capture.
