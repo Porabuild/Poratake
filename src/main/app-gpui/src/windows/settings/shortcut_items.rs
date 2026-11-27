@@ -438,35 +438,10 @@ mod tests {
         assert!(!single.contains(&"shortcuts.editorActions.uploadToCloud"));
     }
 
-    fn renderer_registry_ids() -> Vec<String> {
-        let registry = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .ancestors()
-            .nth(3)
-            .expect("repository root")
-            .join("src/renderer/components/settings/registry/shortcuts.ts");
-        let source = std::fs::read_to_string(registry).expect("read shortcuts.ts");
-        source
-            .lines()
-            .filter_map(|line| line.trim().strip_prefix("id: '"))
-            .filter_map(|rest| rest.split('\'').next())
-            .map(str::to_string)
-            .collect()
-    }
-
     #[test]
-    fn the_shortcut_ids_match_the_renderer_registry_exactly() {
-        let mut theirs = renderer_registry_ids();
-        let mut ours: Vec<String> = items().iter().map(|item| item.id.to_string()).collect();
-        assert_eq!(theirs.len(), 36, "renderer registry id count");
-        assert_eq!(ours.len(), theirs.len(), "shortcut id count");
-        theirs.sort();
-        ours.sort();
-        assert_eq!(ours, theirs);
-    }
-
-    #[test]
-    fn exposes_every_shortcut_the_renderer_registry_does() {
+    fn exposes_all_supported_shortcuts() {
         let ids: Vec<&str> = items().iter().map(|item| item.id).collect();
+        assert_eq!(ids.len(), 36);
         for id in [
             "shortcuts.screenshot.area",
             "shortcuts.screenshot.window",
@@ -510,7 +485,7 @@ mod tests {
     }
 
     #[test]
-    fn covers_every_section_the_renderer_shows() {
+    fn covers_all_shortcut_sections() {
         let sections: Vec<&str> = items().iter().map(|item| item.section).collect();
         for section in [
             SCREENSHOT,

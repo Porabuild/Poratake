@@ -10,11 +10,11 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, CreateWindowExW, DefWindowProcW, GWL_EXSTYLE, GetClientRect, GetWindowLongPtrW,
-    HCURSOR, HHOOK, HWND_TOPMOST, IDC_ARROW, KBDLLHOOKSTRUCT, LoadCursorW, MONITORINFOF_PRIMARY,
-    RegisterClassExW, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SetWindowLongPtrW,
-    SetWindowPos, SetWindowsHookExW, ShowWindow, UnhookWindowsHookEx, WH_KEYBOARD_LL,
-    WINDOW_EX_STYLE, WM_KEYDOWN, WM_SYSKEYDOWN, WNDCLASSEXW, WNDPROC, WS_EX_NOACTIVATE, WS_POPUP,
+    CallNextHookEx, CreateWindowExW, DefWindowProcW, GetClientRect, HCURSOR, HHOOK, HWND_TOPMOST,
+    IDC_ARROW, KBDLLHOOKSTRUCT, LoadCursorW, MONITORINFOF_PRIMARY, RegisterClassExW,
+    SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SetWindowPos, SetWindowsHookExW,
+    ShowWindow, UnhookWindowsHookEx, WH_KEYBOARD_LL, WINDOW_EX_STYLE, WM_KEYDOWN, WM_SYSKEYDOWN,
+    WNDCLASSEXW, WNDPROC, WS_POPUP,
 };
 use windows::core::PCWSTR;
 
@@ -27,7 +27,6 @@ pub struct MonitorEntry {
     pub rect: RECT,
     pub is_primary: bool,
     pub device: String,
-    pub device_number: i32,
 }
 
 pub fn rect_width(rect: &RECT) -> i32 {
@@ -145,15 +144,6 @@ pub fn disable_window_transitions(window: HWND) -> windows::core::Result<()> {
     }
 }
 
-pub fn configure_overlay_window(window: HWND) -> windows::core::Result<()> {
-    unsafe {
-        let style = GetWindowLongPtrW(window, GWL_EXSTYLE);
-        SetWindowLongPtrW(window, GWL_EXSTYLE, style | WS_EX_NOACTIVATE.0 as isize);
-    }
-
-    disable_window_transitions(window)
-}
-
 pub fn monitors() -> Vec<MonitorEntry> {
     let mut entries: Vec<MonitorEntry> = Vec::new();
 
@@ -178,19 +168,11 @@ pub fn monitors() -> Vec<MonitorEntry> {
             let device: String = String::from_utf16_lossy(&info.szDevice)
                 .trim_end_matches('\0')
                 .to_string();
-            let device_number: i32 = device
-                .chars()
-                .filter(|character| character.is_ascii_digit())
-                .collect::<String>()
-                .parse()
-                .unwrap_or(0);
-
             entries.push(MonitorEntry {
                 handle: monitor.0 as isize,
                 rect: info.monitorInfo.rcMonitor,
                 is_primary: (info.monitorInfo.dwFlags & MONITORINFOF_PRIMARY) != 0,
                 device,
-                device_number,
             });
         }
 

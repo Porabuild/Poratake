@@ -1,8 +1,6 @@
-pub const AREA_SELECTOR_MODULE: &str = "area-selector";
 pub const CAMERA_PREVIEW_MODULE: &str = "camera-preview";
 pub const DESKTOP_HELPER_MODULE: &str = "desktop-helper";
 pub const DESKTOP_WALLPAPER_MODULE: &str = "desktop-wallpaper";
-pub const DISPLAY_SELECTOR_MODULE: &str = "display-selector";
 pub const FREEZE_SCREEN_MODULE: &str = "freeze-screen";
 pub const MEDIA_DEVICES_MODULE: &str = "media-devices";
 pub const OCR_MODULE: &str = "ocr";
@@ -17,11 +15,9 @@ pub const TIMER_CONTROL_MODULE: &str = "timer-control";
 pub const WINDOW_SELECTOR_MODULE: &str = "window-selector";
 
 pub const MACOS_MODULES: &[&str] = &[
-    AREA_SELECTOR_MODULE,
     CAMERA_PREVIEW_MODULE,
     DESKTOP_HELPER_MODULE,
     DESKTOP_WALLPAPER_MODULE,
-    DISPLAY_SELECTOR_MODULE,
     FREEZE_SCREEN_MODULE,
     MEDIA_DEVICES_MODULE,
     OCR_MODULE,
@@ -37,11 +33,9 @@ pub const MACOS_MODULES: &[&str] = &[
 ];
 
 pub const WINDOWS_MODULES: &[&str] = &[
-    AREA_SELECTOR_MODULE,
     CAMERA_PREVIEW_MODULE,
     DESKTOP_HELPER_MODULE,
     DESKTOP_WALLPAPER_MODULE,
-    DISPLAY_SELECTOR_MODULE,
     FREEZE_SCREEN_MODULE,
     MEDIA_DEVICES_MODULE,
     OCR_MODULE,
@@ -91,14 +85,6 @@ macro_rules! daemon_methods {
     };
 }
 
-daemon_methods!(AreaSelectorMethod, {
-    DisableWindowTransitions => "disableWindowTransitions",
-    HideWindowWithoutTransitions => "hideWindowWithoutTransitions",
-    ShowWindowWithoutTransitions => "showWindowWithoutTransitions",
-    SetWindowRegion => "setWindowRegion",
-    GetForegroundWindow => "getForegroundWindow",
-    SetForegroundWindow => "setForegroundWindow",
-});
 daemon_methods!(CameraPreviewMethod, {
     Show => "show",
     Hide => "hide",
@@ -111,10 +97,6 @@ daemon_methods!(DesktopHelperMethod, {
 });
 daemon_methods!(DesktopWallpaperMethod, {
     Get => "get",
-});
-daemon_methods!(DisplaySelectorMethod, {
-    Select => "select",
-    Cancel => "cancel",
 });
 daemon_methods!(FreezeScreenMethod, {
     Freeze => "freeze",

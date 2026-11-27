@@ -1,14 +1,6 @@
 {
   "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": [
-    "typescript",
-    "unicorn",
-    "oxc",
-    "react",
-    "import",
-    "promise",
-    "vitest"
-  ],
+  "plugins": ["typescript", "unicorn", "oxc", "import", "promise", "vitest"],
   "categories": {
     "correctness": "error",
     "suspicious": "warn",
@@ -19,18 +11,10 @@
     "nursery": "off"
   },
   "env": {
-    "browser": true,
     "node": true,
     "builtin": true
   },
-  "ignorePatterns": [
-    "dist",
-    "dist-electron",
-    "build",
-    "coverage",
-    "src/main/target",
-    "src/renderer/components/ui"
-  ],
+  "ignorePatterns": ["build", "coverage", "src/main/target"],
   "rules": {
     "no-unused-vars": [
       "error",
@@ -40,20 +24,9 @@
         "caughtErrorsIgnorePattern": "^_"
       }
     ],
-    "react/exhaustive-deps": "error",
-    "react/rules-of-hooks": "error",
     "typescript/consistent-type-imports": "warn",
     "typescript/switch-exhaustiveness-check": "warn",
     "typescript/no-explicit-any": "warn",
-    "react/react-in-jsx-scope": "off",
-    "react/exhaustive-effect-dependencies": "error",
-    "react/globals": "error",
-    "react/immutability": "error",
-    "react/memo-dependencies": "error",
-    "react/no-deriving-state-in-effects": "error",
-    "react/preserve-manual-memoization": "error",
-    "react/refs": "error",
-    "react/set-state-in-effect": "error",
     "vitest/require-mock-type-parameters": "off",
     "promise/always-return": "off",
     "unicorn/consistent-function-scoping": "off",
@@ -63,14 +36,5 @@
     "import/no-unassigned-import": "off",
     "oxc/no-map-spread": "off",
     "promise/no-promise-in-callback": "off"
-  },
-  "overrides": [
-    {
-      "files": ["**/*.d.ts"],
-      "rules": {
-        "unicorn/require-module-specifiers": "off",
-        "typescript/consistent-type-imports": "off"
-      }
-    }
-  ]
+  }
 }

@@ -207,11 +207,13 @@ mod tests {
 
     #[test]
     fn public_assets_resolve_from_the_running_executable() {
-        let resolved = public_asset_path("icon.png").unwrap();
+        let asset = "sounds/keyboard/cherry-blue/press-1.mp3";
+        let resolved = public_asset_path(asset).unwrap();
         assert_eq!(
             resolved.canonicalize().unwrap(),
             repository_root()
-                .join("public/icon.png")
+                .join("public")
+                .join(asset)
                 .canonicalize()
                 .unwrap()
         );
@@ -219,9 +221,10 @@ mod tests {
 
     #[test]
     fn the_build_checkout_serves_an_unlocatable_executable() {
+        let asset = "sounds/keyboard/cherry-blue/press-1.mp3";
         assert_eq!(
-            locate_from(None, Path::new("icon.png"), "public"),
-            Some(repository_root().join("public/icon.png"))
+            locate_from(None, Path::new(asset), "public"),
+            Some(repository_root().join("public").join(asset))
         );
     }
 }

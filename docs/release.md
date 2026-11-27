@@ -1,66 +1,28 @@
-# Releasing a GPUI build
+# Releasing Poratake
 
-The `Release` workflow (`.github/workflows/release.yml`) is the only shipping
-path. Electron builds are frozen; `scripts/release.sh` exits unless
-`PORATAKE_ELECTRON_RELEASE=1` is set for a historical build.
+The [Release workflow](../.github/workflows/release.yml) builds and publishes the native app.
 
 ## Preconditions
 
-- The `Checks` workflow is green on the release commit: TypeScript checks,
-  Vitest, macOS GPUI, Linux x64/arm64, and Windows x64/arm64.
-- The open gates in `GPUI-UI-PARITY-AUDIT.md` are resolved for the platforms
-  being announced.
-- An installed 0.9.6 Electron build has been updated to the GPUI build on real
-  Windows and macOS machines.
-- The target version is not tagged yet.
+- Confirm the Checks workflow is green for macOS, Windows, and Linux on the release commit.
+- Confirm the target version has no Git tag.
 
 ## Dry run
 
-Run **Actions → Release → Run workflow** with:
+Run **Actions → Release → Run workflow** with the new version, such as `1.0.7`, and set `dry_run` to `true`. The workflow builds and validates the release assets without creating a Git tag or publishing a release.
 
-- `version`: the new version, for example `0.9.7`
-- `dry_run`: `true`
+- macOS universal DMG and ZIP, plus `latest-mac.yml`
+- Windows x64 and arm64 installers and Velopack packages, plus the per-architecture release feeds and merged `latest.yml`
+- Linux x64 and arm64 tarballs and DEB packages, plus `latest-linux.yml`
 
-The workflow builds and validates every asset without creating a tag or
-release. Expect these artifacts:
+The workflow checks both architectures of the macOS app and nested binaries with `lipo`. It also verifies signing and notarization.
 
-- macOS: `Poratake-<version>-universal.dmg`,
-  `Poratake-<version>-universal-mac.zip`, `latest-mac.yml`
-- Windows: `Poratake-<version>-win-x64.exe`,
-  `Poratake-<version>-win-arm64.exe`
-- Linux: `Poratake-<version>-linux-x64.tar.gz`,
-  `Poratake-<version>-linux-x64.deb`, the arm64 equivalents, and
-  `latest-linux.yml`
-- Merged `latest.yml` with both Windows architectures
+## Publish and verify
 
-The macOS app and every nested binary must report `arm64` and `x86_64`; the
-workflow checks this with `lipo`.
+Run the workflow with `dry_run` set to `false`. It builds and validates the assets, commits the version bump to the metadata files, then creates a draft release. It checks the uploaded assets and publishes the release against the exact tagged source.
 
-## Publish
+- Check the updater manifests against the published filenames, sizes, and SHA-512 digests.
+- On macOS and Windows, verify clean installs and in-app updates from the previous release.
+- On Omarchy, run `packaging/omarchy/install.sh`, launch from the desktop entry, and verify the Hyprland autostart entry. Record any Wayland gaps in [Linux support](omarchy.md).
 
-Run the same workflow with `dry_run: false`. It:
-
-1. builds and validates all assets;
-2. commits the `package.json` version bump;
-3. tags `v<version>` on that commit;
-4. creates a draft release, validates asset names and sizes, then publishes it
-   as the latest release.
-
-Electron 0.9.6 remains downloadable; it is no longer rebuilt.
-
-## Verify after publishing
-
-- Confirm `latest-mac.yml`, `latest.yml`, and `latest-linux.yml` point at the
-  new files and their SHA-512 values.
-- Install on a clean macOS, Windows, and Omarchy 4.5 machine.
-- Confirm the in-app update from 0.9.6 to the GPUI build on Windows and macOS.
-- On Omarchy, run `packaging/omarchy/install.sh`, launch from the desktop entry,
-  and verify the autostart block in `~/.config/hypr/autostart.conf`.
-- Record any Wayland gaps in `docs/omarchy.md` and the audit.
-
-## Failure handling
-
-A failed publish triggers `cleanup-failed-release`, which removes the draft
-release and staging tag. A published release can be removed with
-`scripts/delete-release.sh <version> <previous-version>`; do not delete a tag
-that a source archive is meant to preserve unless the release is being withdrawn.
+If publishing fails, the `cleanup-failed-release` job removes the failed draft and staging tag.

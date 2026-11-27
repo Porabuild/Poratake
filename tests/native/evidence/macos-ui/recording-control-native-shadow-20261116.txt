@@ -1,6 +1,0 @@
-macOS native recording control shadow probe, 2026-11-16
-
-An isolated GPUI parity probe displayed the generated dark recording control at normal window level. AppKit reported hasShadow=false, then true, then false when toggled by the fixture. The computer-use helper's already-authorized ScreenCaptureKit window capture was taken before and during the true state. Each image was 552 x 88 pixels, corresponding to the fitted 276 x 44 point window at 2x scale. The PNG files had identical SHA-256:
-cd22f0eb8e1cc80080ee61cd6aeb5185df774d0af328e26cc5961d97419364cd
-
-The screenshot captures only the window frame. It does not show any shadow outside that frame, prove that such a shadow is visible on screen, test its hit behavior, or prove it is excluded from a screen capture. No real device, Poratake screen capture, recording, or privacy request was used. The existing editor was not touched.

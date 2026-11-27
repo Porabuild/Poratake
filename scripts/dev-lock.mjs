@@ -276,9 +276,7 @@ export const isPoratakeDevCommand = (root, command) => {
 
   if (!normalizedCommand.includes(normalizedRoot)) return false;
 
-  if (normalizedCommand.includes('/scripts/dev.mjs')) return true;
   if (normalizedCommand.includes('/scripts/dev-gpui.mjs')) return true;
-  if (normalizedCommand.includes('/node_modules/electron/')) return true;
   if (normalizedCommand.includes('/poratake-daemon')) return true;
   if (normalizedCommand.includes('/poratake-gpui')) return true;
   if (
@@ -288,11 +286,7 @@ export const isPoratakeDevCommand = (root, command) => {
     return true;
   }
 
-  const viteIndex = normalizedCommand.indexOf('/node_modules/vite/');
-  if (viteIndex < 0) return false;
-
-  const viteArguments = normalizedCommand.slice(viteIndex);
-  return !/(^|\s)(build|preview|optimize)(\s|$)/.test(viteArguments);
+  return false;
 };
 
 const listWindowsPids = root =>

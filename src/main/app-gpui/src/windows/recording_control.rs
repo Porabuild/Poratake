@@ -5036,50 +5036,14 @@ mod toolbar_tests {
         assert!(applied, "set capture affinity on GPUI-style native window");
     }
 
-    /// The recording bar's buttons carry their state in the icon, not in a
-    /// background. `ToolbarButton` is `variant="ghost"` with only a hover
-    /// background, and the system-audio button swaps `Volume2` for `VolumeX`.
     #[test]
     fn the_bar_signals_state_by_icon_and_not_by_a_filled_background() {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .ancestors()
-            .nth(3)
-            .expect("repository root")
-            .to_path_buf();
-
-        let button = std::fs::read_to_string(
-            root.join("src/renderer/components/area-overlay/toolbar-button.tsx"),
-        )
-        .expect("read toolbar-button.tsx");
-        assert!(
-            button.contains(r#"variant="ghost""#),
-            "the toolbar button is a ghost"
-        );
-        assert!(
-            !button.contains("data-selected") && !button.contains("aria-pressed:"),
-            "the toolbar button has no pressed styling, so neither should this shell"
-        );
-
-        let window =
-            std::fs::read_to_string(root.join("src/renderer/windows/recording-control-window.tsx"))
-                .expect("read recording-control-window.tsx");
-        assert!(
-            window.contains("Volume2") && window.contains("VolumeX"),
-            "the icon swap is what shows whether system audio is on"
-        );
-
-        let here = std::fs::read_to_string(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("src/windows/recording_control.rs"),
-        )
-        .expect("read recording_control.rs");
-        // A call, not a mention: this test's own assertion and the comment
-        // above the button both name the method they forbid, so match only
-        // lines that actually begin with the call.
-        let call = here
-            .split("#[cfg(test)]")
-            .next()
-            .unwrap_or_default()
+        let source = include_str!("recording_control.rs")
+            .rsplit_once("\n#[cfg(test)]\nmod tests")
+            .unwrap()
+            .0;
+        assert!(source.contains("\"volume-2\"") && source.contains("\"volume-x\""));
+        let call = source
             .lines()
             .find(|line| line.trim_start().starts_with(".selected("));
         assert!(

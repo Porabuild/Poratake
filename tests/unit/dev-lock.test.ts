@@ -80,32 +80,8 @@ describe('dev lock', () => {
 
   it('matches only Poratake dev processes from the worktree', () => {
     const root = 'C:\\work\\poratake';
-
-    expect(
-      isPoratakeDevCommand(
-        root,
-        `node ${root}\\node_modules\\vite\\bin\\vite.js`
-      )
-    ).toBe(true);
     expect(isPoratakeDevCommand(root, `git -C ${root} status`)).toBe(false);
-    expect(
-      isPoratakeDevCommand(
-        root,
-        `node ${root}\\node_modules\\vite\\bin\\vite.js build`
-      )
-    ).toBe(false);
-    expect(
-      isPoratakeDevCommand(
-        root,
-        `node ${root}\\node_modules\\vite\\bin\\vite.js preview`
-      )
-    ).toBe(false);
-    expect(
-      isPoratakeDevCommand(
-        root,
-        `node C:\\other\\node_modules\\vite\\bin\\vite.js`
-      )
-    ).toBe(false);
+
     expect(
       isPoratakeDevCommand(root, `node ${root}\\scripts\\dev-gpui.mjs`)
     ).toBe(true);

@@ -121,13 +121,7 @@ describe('release asset validation', () => {
       path.join(process.cwd(), '.github', 'workflows', 'release.yml'),
       'utf8'
     );
-    const releaseScript = readFileSync(
-      path.join(process.cwd(), 'scripts', 'release.sh'),
-      'utf8'
-    );
-
     expect(workflow).not.toContain('inputs.notarize');
-    expect(workflow).not.toContain('build-mac:local');
     expect(workflow).toContain('group: release-stable');
     expect(workflow).toContain('cancel-in-progress: false');
     expect(workflow).toMatch(/build-macos:\r?\n {4}needs: prepare/);
@@ -141,9 +135,6 @@ describe('release asset validation', () => {
     expect(workflow).toContain(
       'security set-keychain-settings -lut 21600 build.keychain'
     );
-    expect(workflow).toContain('ELECTRON_SKIP_BINARY_DOWNLOAD: 1');
-    expect(workflow).not.toContain('~/Library/Caches/electron');
-    expect(workflow).not.toContain('~/AppData/Local/electron/Cache');
     expect(workflow).toContain('release-draft-${{ github.run_id }}');
     expect(workflow).toContain('-f tag_name="$TAG"');
     expect(workflow).not.toContain('git push origin "v$VERSION"');
@@ -169,10 +160,5 @@ describe('release asset validation', () => {
     expect(macPackageScript).toContain('notarytool submit');
     expect(macPackageScript).toContain('stapler staple');
     expect(macPackageScript).toContain('stapler validate');
-    expect(releaseScript).toContain(
-      '[[ "$NOTARIZE" == "false" ]] && [[ "$SKIP_UPLOAD" == "false" ]]'
-    );
-    expect(releaseScript).toContain('codesign --verify --deep --strict');
-    expect(releaseScript).toContain('xcrun stapler validate');
   });
 });

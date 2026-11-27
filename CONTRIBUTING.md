@@ -11,10 +11,7 @@ Thanks for your interest in contributing to Poratake.
 
 ## Development Setup
 
-GPUI (`src/main/app-gpui/`) is the shipping shell. The Electron shell in
-`src/renderer/` and its TypeScript main process are frozen and no longer part of
-a release; changes should target GPUI unless they are explicitly about the frozen
-reference.
+The desktop app lives in `src/main/app-gpui/`. Install Bun and the Rust toolchain before building it. The dev command uses Bacon 3.25.0.
 
 The native binaries are not committed to the repository. Build them once before
 your first run.
@@ -47,7 +44,7 @@ bun run build-native-win
 ```
 
 `build-native-win` builds the Rust daemon, LGPL-compliant FFmpeg, and whisper.cpp.
-Create the GPUI NSIS installer with:
+Create the Windows installer with Velopack. Install the `vpk` CLI through the .NET SDK using `dotnet tool update -g vpk --version 1.2.161`, then run:
 
 ```powershell
 cargo build --release --locked --manifest-path src/main/Cargo.toml --target x86_64-pc-windows-msvc --package poratake-daemon --package poratake-gpui
@@ -104,11 +101,9 @@ manager.
 bun run checks
 ```
 
-Write tests for new features and bug fixes. GPUI tests run with `cargo test`
-from `src/main/Cargo.toml`; the frozen Electron shell still runs its Vitest
-suite. `bun run checks` covers the TypeScript checks and that suite. Run
-`cargo fmt`, `cargo clippy -- -D warnings`, and `cargo test` for any GPUI or
-daemon change.
+Write tests for new features and bug fixes. Run Cargo tests and Clippy against
+the affected crates in `src/main/Cargo.toml`. The Checks workflow also runs the
+native Swift tests, Windows desktop tests, and Linux X11 integration tests.
 
 ## Commit and Pull Request Titles
 

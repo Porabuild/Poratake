@@ -3,8 +3,7 @@ const MONOCHROME_TOLERANCE: u8 = 24;
 const TRAY_ICON_BYTES: &[u8] = include_bytes!("../../../../../../public/tray-icon.png");
 
 #[cfg(not(windows))]
-const RECORDING_ICON_BYTES: &[u8] =
-    include_bytes!("../../../../../../src/main/menu/recording/iconTemplate@2x.png");
+const RECORDING_ICON_BYTES: &[u8] = include_bytes!("recording-icon.png");
 
 fn adapt_monochrome_pixels(image: &mut image::RgbaImage, dark_mode: bool) {
     let value = if dark_mode { 255 } else { 0 };

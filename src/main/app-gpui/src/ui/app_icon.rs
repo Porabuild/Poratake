@@ -1,16 +1,8 @@
-//! The application icon, as an element.
-//!
-//! `about-tab.tsx` and `onboarding-window.tsx` both render
-//! `<img src={appIcon} className="h-16 w-16 rounded-xl|2xl">` -- the real
-//! `build/icon.png`. This shell drew an aperture glyph on an accent-coloured
-//! tile instead, which is a different picture in both places.
-
 use std::sync::{Arc, OnceLock};
 
 use gpui::{img, prelude::*, AnyElement, Pixels, RenderImage};
 use herogpui::gpui;
 
-/// The same file the renderer imports as `@build/icon.png`.
 const ICON_PNG: &[u8] = include_bytes!("../../../../../build/icon.png");
 
 fn decode_icon(bytes: &[u8]) -> image::ImageResult<image::RgbaImage> {
@@ -68,28 +60,7 @@ mod tests {
         assert_eq!(
             (decoded.width(), decoded.height()),
             (1024, 1024),
-            "the icon is the square master the renderer imports"
+            "the icon is the square master"
         );
-    }
-
-    /// `about-tab.tsx` and `onboarding-window.tsx` both point at the same file,
-    /// so this fails if either stops using it and the two pictures drift apart.
-    #[test]
-    fn both_windows_import_the_same_file_in_the_renderer() {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .ancestors()
-            .nth(3)
-            .expect("repository root")
-            .to_path_buf();
-        for relative in [
-            "src/renderer/components/settings/about-tab.tsx",
-            "src/renderer/windows/onboarding-window.tsx",
-        ] {
-            let source = std::fs::read_to_string(root.join(relative)).expect("read the window");
-            assert!(
-                source.contains("from '@build/icon.png'"),
-                "{relative} no longer renders build/icon.png"
-            );
-        }
     }
 }

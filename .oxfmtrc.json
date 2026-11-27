@@ -9,14 +9,8 @@
   "arrowParens": "avoid",
   "endOfLine": "lf",
   "sortPackageJson": false,
-  "sortTailwindcss": {
-    "stylesheet": "./src/renderer/styles/base.css",
-    "functions": ["cn", "clsx"]
-  },
   "ignorePatterns": [
     "node_modules",
-    "dist",
-    "dist-electron",
     "build",
     "src/main/target",
     "src/main/Cargo.lock",
@@ -26,12 +20,9 @@
     "vendor/gpui-pre-windows",
     "vendor/rfd",
     "bun.lock",
-    "package-lock.json",
-    "yarn.lock",
     "*.log",
     ".DS_Store",
     "coverage",
-    "*.json5",
     "CLAUDE.md"
   ]
 }

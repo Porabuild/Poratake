@@ -17,7 +17,7 @@ IFS='
 for FILE in $(git diff --cached --name-only --diff-filter=ACMR); do
   case "$FILE" in
     vendor/*) continue ;;
-    *.ts | *.tsx | *.mts | *.cts | *.js | *.jsx | *.mjs | *.cjs | *.json | *.css | *.md) ;;
+    *.ts | *.mjs | *.json | *.md) ;;
     *) continue ;;
   esac
 
@@ -40,8 +40,8 @@ if [ "$MATCHED" -eq 1 ]; then
   fi
 fi
 
-if ! (cd "$ROOT" && bun run typecheck > /dev/null 2>&1); then
-  echo "typecheck: failed. Run: bun run typecheck"
+if ! (cd "$ROOT" && bun run check:daemon-contract > /dev/null 2>&1); then
+  echo "Generated daemon contract is stale. Run: bun run check:daemon-contract"
   FAILED=1
 fi
 

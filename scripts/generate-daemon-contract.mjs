@@ -93,39 +93,6 @@ function featureType(feature) {
   return typeOverrides.get(feature) ?? pascal(feature);
 }
 
-function typescriptCapabilities() {
-  const lines = ['export const FEATURE_IDS = ['];
-  for (const feature of capabilities.features) {
-    lines.push(`  '${feature}',`);
-  }
-  lines.push(
-    '] as const;',
-    '',
-    'export type FeatureId = (typeof FEATURE_IDS)[number];',
-    '',
-    'export const PLATFORM_CAPABILITIES = {'
-  );
-  for (const [target, features] of Object.entries(capabilities.targets)) {
-    const inline = `  ${target}: [${features.map(feature => `'${feature}'`).join(', ')}],`;
-    if (inline.length <= 80) {
-      lines.push(inline);
-      continue;
-    }
-    lines.push(`  ${target}: [`);
-    for (const feature of features) {
-      lines.push(`    '${feature}',`);
-    }
-    lines.push('  ],');
-  }
-  lines.push(
-    '} as const satisfies Record<string, readonly FeatureId[]>;',
-    '',
-    'export type CapabilityTarget = keyof typeof PLATFORM_CAPABILITIES;',
-    ''
-  );
-  return lines.join('\n');
-}
-
 function rustCapabilities() {
   const lines = [
     '#[cfg_attr(target_os = "linux", allow(dead_code))]',
@@ -153,26 +120,6 @@ function rustCapabilities() {
     }
     lines.push('];', '');
   }
-  return lines.join('\n');
-}
-
-function typescript() {
-  const lines = ['export const DAEMON_METHODS = {'];
-  for (const [module, definition] of modules) {
-    const methods = definition.shared;
-    const key = /^[a-z]+$/.test(module) ? module : `'${module}'`;
-    const inline = `  ${key}: [${methods.map(method => `'${method}'`).join(', ')}],`;
-    if (inline.length <= 80) {
-      lines.push(inline);
-      continue;
-    }
-    lines.push(`  ${key}: [`);
-    for (const method of methods) {
-      lines.push(`    '${method}',`);
-    }
-    lines.push('  ],');
-  }
-  lines.push('} as const;', '');
   return lines.join('\n');
 }
 
@@ -267,11 +214,6 @@ function swift() {
 }
 
 const outputs = new Map([
-  [path.join(root, 'src/types/daemon-methods.generated.ts'), typescript()],
-  [
-    path.join(root, 'src/types/capabilities.generated.ts'),
-    typescriptCapabilities(),
-  ],
   [path.join(root, 'src/main/daemon-common/src/generated_methods.rs'), rust()],
   [
     path.join(root, 'src/main/app-gpui/src/system/capabilities.generated.rs'),
