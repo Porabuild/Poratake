@@ -493,7 +493,10 @@ impl HistoryWindow {
         let Some(item) = self.visible().get(index).map(|item| (*item).clone()) else {
             return;
         };
-        cx.reveal_path(std::path::Path::new(&item.original_path));
+        crate::system::desktop::show_capture_in_folder(
+            cx,
+            std::path::Path::new(&item.original_path),
+        );
         cx.notify();
     }
 
@@ -1011,6 +1014,7 @@ mod tests {
         history
             .update(cx, |history, _, cx| history.reveal_index(0, cx))
             .unwrap();
+        cx.run_until_parked();
 
         assert_eq!(cx.revealed_paths(), vec![path]);
     }
