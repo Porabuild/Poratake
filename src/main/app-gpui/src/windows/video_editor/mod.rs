@@ -3050,7 +3050,7 @@ impl VideoEditorWindow {
 
     pub fn reveal_project(&mut self, cx: &mut Context<Self>) {
         if let Some(path) = &self.path {
-            cx.reveal_path(path);
+            crate::system::desktop::show_capture_in_folder(cx, path);
         }
         cx.notify();
     }
@@ -4845,6 +4845,7 @@ mod keyboard_demo_tests {
                 editor.reveal_project(cx);
             })
             .unwrap();
+        cx.run_until_parked();
 
         assert_eq!(cx.revealed_paths(), vec![project]);
     }
